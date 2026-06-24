@@ -123,12 +123,22 @@ def run(config: Config) -> int:
     print(f"\nОтчёт сохранён: {config.output_file}")
     print(f"Период: {config.period_label}")
 
-    with_discrep = [r for r in recon_rows if r.diff_total is not None and abs(r.diff_total) > config.eps]
+    # Показатель попадает в сводку расхождений, если отличается итог за период
+    # ИЛИ есть хотя бы один день с дневным расхождением (даже при равных итогах).
+    def _has_discrep(r) -> bool:
+        total_diff = r.diff_total is not None and abs(r.diff_total) > config.eps
+        return total_diff or bool(r.diff_dates)
+
+    with_discrep = [r for r in recon_rows if _has_discrep(r)]
     if with_discrep:
         print(f"\nПоказатели с расхождениями ({len(with_discrep)}):")
         for r in with_discrep:
-            dates_str = ", ".join(str(d) for d in r.diff_dates)
-            print(f"  — {r.indicator}: {format_amount(r.diff_total)} ({dates_str})")
+            dates_str = ", ".join(d.strftime("%d.%m.%Y") for d in r.diff_dates)
+            if r.diff_total is not None and abs(r.diff_total) > config.eps:
+                total_str = format_amount(r.diff_total)
+            else:
+                total_str = "итоги равны, отличия по дням"
+            print(f"  — {r.indicator}: {total_str} ({dates_str})")
     else:
         print("\nРасхождений не обнаружено.")
 

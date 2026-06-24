@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+from openpyxl.utils import column_index_from_string
 
 from config.mappings import FileRule
 from npf_recon.models import Record
@@ -19,6 +20,22 @@ from npf_recon.sources.base import RawDocument
 from .base import Parser
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_col(spec: object) -> int:
+    """
+    Приводит спецификацию колонки к 0-based индексу.
+
+    Принимает как числовой индекс (0-based: 0, 7, 8), так и букву Excel
+    («A», «H», «I») — что делает правила в mappings.py читаемее.
+
+      _resolve_col(7)   -> 7
+      _resolve_col("H") -> 7
+      _resolve_col("A") -> 0
+    """
+    if isinstance(spec, str) and spec.strip().isalpha():
+        return column_index_from_string(spec.strip().upper()) - 1
+    return int(spec)
 
 
 class ExcelGenericParser(Parser):
@@ -38,8 +55,8 @@ class ExcelGenericParser(Parser):
         :return:     список Record.
         """
         params = rule.params
-        date_col: int = params["date_col"]
-        amount_col: int = params["amount_col"]
+        date_col: int = _resolve_col(params["date_col"])
+        amount_col: int = _resolve_col(params["amount_col"])
         indicator: str = params["indicator"]
 
         try:

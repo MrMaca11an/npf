@@ -160,9 +160,13 @@ def _write_svod(
     for data_row_idx, recon in enumerate(rows, start=4):
         bu = recon.bu
         pu = recon.pu
-        has_discrep = (
+        # Расхождение по итогу периода (сумма БУ − ПУ за месяц)
+        has_total_discrep = (
             recon.diff_total is not None and abs(recon.diff_total) > eps
         )
+        # Расхождение хотя бы по одному дню — даже если месячные итоги совпали
+        # (взаимно компенсирующиеся отклонения по дням).
+        has_any_discrep = has_total_discrep or bool(recon.diff_dates)
 
         row_data = [
             # (значение, колонка 1-based)
@@ -171,7 +175,7 @@ def _write_svod(
             (_format_side_dates(bu), 3),
             (format_amount(pu.total) if pu else "", 4),
             (_format_side_dates(pu), 5),
-            (format_amount(recon.diff_total) if has_discrep else "", 6),
+            (format_amount(recon.diff_total) if has_total_discrep else "", 6),
             (_format_dates(recon.diff_dates) if recon.diff_dates else "", 7),
         ]
 
@@ -182,7 +186,7 @@ def _write_svod(
                 wrap_text=True,
             )
             _apply_border(cell)
-            if has_discrep and col_idx in (6, 7):
+            if has_any_discrep and col_idx in (6, 7):
                 cell.fill = _DISCREP_FILL
 
     # --- Ширины колонок ---

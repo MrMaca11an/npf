@@ -187,6 +187,68 @@ class TestExcelGenericParser:
         assert len(records) == 1
         assert records[0].source_file == "МойФайл_2026.xlsx"
 
+    def test_column_letter_spec(self, tmp_path: Path):
+        """Колонки можно задавать буквами Excel («A», «H»), не только индексами."""
+        from npf_recon.parsers.excel_generic import ExcelGenericParser
+
+        xlsx = tmp_path / "letters.xlsx"
+        self._write_excel(xlsx, [
+            [datetime.date(2026, 2, 1), None, None, None, None, None, None, 100_000.0],
+        ])
+        # amount_col задаём буквой «H», date_col — буквой «A»
+        rule = _make_generic_rule("Тест", date_col="A", amount_col="H")
+        raw = _make_raw(xlsx)
+        records = ExcelGenericParser().parse(raw, rule)
+        assert len(records) == 1
+        assert records[0].amount == pytest.approx(100_000.0)
+
+    def test_multiple_rows_same_day(self, tmp_path: Path):
+        """Несколько операций в один день дают отдельные записи (суммирует агрегатор)."""
+        from npf_recon.parsers.excel_generic import ExcelGenericParser
+
+        xlsx = tmp_path / "multi.xlsx"
+        self._write_excel(xlsx, [
+            [datetime.date(2026, 2, 1), None, None, None, None, None, None, 8_500.0],
+            [datetime.date(2026, 2, 1), None, None, None, None, None, None, 2_300.0],
+        ])
+        rule = _make_generic_rule("Тест", date_col=0, amount_col=7)
+        records = ExcelGenericParser().parse(_make_raw(xlsx), rule)
+        assert len(records) == 2
+        assert all(r.date == datetime.date(2026, 2, 1) for r in records)
+        assert sum(r.amount for r in records) == pytest.approx(10_800.0)
+
+    def test_negative_parentheses_amount(self, tmp_path: Path):
+        """Отрицательная сумма в скобках «(1 500,00)» парсится как −1500."""
+        from npf_recon.parsers.excel_generic import ExcelGenericParser
+
+        xlsx = tmp_path / "neg.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Дата", None, None, None, None, None, None, "Сумма"])
+        ws.append(["14.02.2026", None, None, None, None, None, None, "(1 500,00)"])
+        wb.save(xlsx)
+
+        rule = _make_generic_rule("Тест", date_col=0, amount_col=7)
+        records = ExcelGenericParser().parse(_make_raw(xlsx), rule)
+        assert len(records) == 1
+        assert records[0].amount == pytest.approx(-1_500.0)
+
+    def test_short_year_dates(self, tmp_path: Path):
+        """Даты в формате DD.MM.YY."""
+        from npf_recon.parsers.excel_generic import ExcelGenericParser
+
+        xlsx = tmp_path / "shortyear.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Дата", None, None, None, None, None, None, "Сумма"])
+        ws.append(["01.02.26", None, None, None, None, None, None, 1000.0])
+        wb.save(xlsx)
+
+        rule = _make_generic_rule("Тест", date_col=0, amount_col=7)
+        records = ExcelGenericParser().parse(_make_raw(xlsx), rule)
+        assert len(records) == 1
+        assert records[0].date == datetime.date(2026, 2, 1)
+
 
 # ------------------------------------------------------------------
 # Тесты excel_vyplata
@@ -284,6 +346,49 @@ class TestExcelVyplataParser:
         assert by_ind["Выплата пенсии"] == pytest.approx(100.0)
         assert by_ind["Выплата выкупных сумм"] == pytest.approx(200.0)
         assert by_ind["Выплата наследуемых сумм"] == pytest.approx(300.0)
+
+    def test_headers_case_and_spaces_insensitive(self, tmp_path: Path):
+        """Заголовки распознаются независимо от регистра и лишних пробелов."""
+        from npf_recon.parsers.excel_vyplata import ExcelVyplataParser
+
+        xlsx = tmp_path / "Выплата_headers.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        # Иной регистр и двойные пробелы в заголовках
+        ws.append(["№", "  дата   ОПЕРАЦИИ ", "видвыплат", "Договор", "ФИО", " СУММА "])
+        ws.append([1, datetime.date(2026, 2, 1), "негосударственная ПЕНСИЯ", "Д", "А", 8_500.0])
+        wb.save(xlsx)
+
+        records = ExcelVyplataParser().parse(_make_raw(xlsx), _make_vyplata_rule())
+        assert len(records) == 1
+        # Вид выплаты в ином регистре также распознан
+        assert records[0].indicator == "Выплата пенсии"
+        assert records[0].amount == pytest.approx(8_500.0)
+
+    def test_header_aliases(self, tmp_path: Path):
+        """Заголовки можно задать списком синонимов — берётся первый найденный."""
+        from npf_recon.parsers.excel_vyplata import ExcelVyplataParser
+        from config.mappings import FileRule, VYPLATA_TYPE_MAP
+
+        xlsx = tmp_path / "Выплата_alias.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Дата", "Вид", "Размер"])  # альтернативные имена
+        ws.append([datetime.date(2026, 2, 1), "Негосударственная пенсия", 5_000.0])
+        wb.save(xlsx)
+
+        rule = FileRule(
+            name_contains="выплата", side="ПУ", fmt="excel", parser_name="vyplata",
+            params={
+                "date_col_header": ["Дата операции", "Дата"],
+                "type_col_header": ["ВидВыплат", "Вид"],
+                "amount_col_header": ["Сумма", "Размер"],
+                "type_map": VYPLATA_TYPE_MAP,
+            },
+        )
+        records = ExcelVyplataParser().parse(_make_raw(xlsx), rule)
+        assert len(records) == 1
+        assert records[0].indicator == "Выплата пенсии"
 
 
 # ------------------------------------------------------------------
@@ -430,3 +535,51 @@ class TestJsonNpoParser:
 
         assert len(records) == 1
         assert records[0].amount == pytest.approx(100_000.0)
+
+    def test_negative_amounts(self, tmp_path: Path):
+        """Отрицательные суммы: скобки и завершающий минус."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_neg.json"
+        self._write_json(json_path, self._make_npo_data([
+            {
+                "date": "2026-02-14T00:00:00",
+                "amount": "-3000.00",
+                "components": [
+                    {"account": "76.01", "name": "Целевые взносы ФЛ", "amount": "(1 500,00)"},
+                    {"account": "76.02", "name": "Целевые взносы ЮЛ", "amount": "1500.00-"},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        by_ind = {r.indicator: r.amount for r in records}
+        assert by_ind["Целевые взносы ФЛ"] == pytest.approx(-1_500.0)
+        assert by_ind["Целевые взносы ЮЛ"] == pytest.approx(-1_500.0)
+
+    def test_missing_report_key(self, tmp_path: Path):
+        """Отсутствие report.items → пустой список без падения."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_noreport.json"
+        self._write_json(json_path, {"foo": "bar"})
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert records == []
+
+    def test_item_without_components(self, tmp_path: Path):
+        """Элемент без поля components пропускается без ошибок."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_nocomp.json"
+        self._write_json(json_path, self._make_npo_data([
+            {"date": "2026-02-01T00:00:00", "amount": "0"},
+            {
+                "date": "2026-02-03",
+                "amount": "12000.00",
+                "components": [
+                    {"account": "76.01", "name": "Целевые взносы ФЛ", "amount": "12000.00"},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert len(records) == 1
+        assert records[0].indicator == "Целевые взносы ФЛ"

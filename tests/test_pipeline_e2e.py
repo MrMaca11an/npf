@@ -188,6 +188,65 @@ class TestPipelineE2E:
 
         assert found, "В Детализации не найдена строка Пенсионные взносы ФЛ / 28.02.2026"
 
+    @staticmethod
+    def _svod_row(ws, indicator: str):
+        """Возвращает кортеж значений строки «Свод» по названию показателя."""
+        for row in ws.iter_rows(min_row=4, max_row=17, values_only=True):
+            if row[0] == indicator:
+                return row
+        return None
+
+    def test_cel_ul_daily_only_discrepancy(self, temp_data_dir: Path, output_file: Path):
+        """Целевые взносы ЮЛ: итоги равны, но дневные расхождения отражены в колонке дат."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Свод"]
+        row = self._svod_row(ws, "Целевые взносы ЮЛ")
+        assert row is not None
+        bu_sum, pu_sum = row[1], row[3]
+        discrep_sum, discrep_dates = row[5], row[6]
+        # Итоги БУ и ПУ совпадают
+        assert bu_sum == pu_sum
+        # Сумма расхождения пуста (итоги равны), но даты дневных отличий присутствуют
+        assert not discrep_sum
+        assert discrep_dates and "10.02.2026" in str(discrep_dates) and "24.02.2026" in str(discrep_dates)
+
+    def test_cel_ul_in_details(self, temp_data_dir: Path, output_file: Path):
+        """Дневные расхождения Целевых взносов ЮЛ присутствуют в «Детализации»."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Детализация"]
+        rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
+                if r[0] == "Целевые взносы ЮЛ"]
+        dates = {r[1] for r in rows}
+        assert "10.02.2026" in dates
+        assert "24.02.2026" in dates
+
+    def test_pv_fl_period_totals(self, temp_data_dir: Path, output_file: Path):
+        """Итоги за период по Пенсионным взносам ФЛ: БУ > ПУ ровно на 5 000."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Свод"]
+        row = self._svod_row(ws, "Пенсионные взносы ФЛ")
+        assert "1 022 706,60" in str(row[1])   # БУ
+        assert "1 017 706,60" in str(row[3])    # ПУ
+        assert "5 000,00" in str(row[5])        # расхождение по итогу
+
+    def test_vyplata_pu_only(self, temp_data_dir: Path, output_file: Path):
+        """Выплаты присутствуют только в ПУ, сторона БУ пуста, расхождение не считается."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Свод"]
+        row = self._svod_row(ws, "Выплата пенсии")
+        assert not row[1]          # БУ Сумма пуста
+        assert row[3]              # ПУ Сумма заполнена
+        assert "74 600,00" in str(row[3])   # 8500+2300+...+8800
+        assert not row[5]          # расхождение не вычисляется
+
+    def test_negative_correction_no_discrepancy(self, temp_data_dir: Path, output_file: Path):
+        """Целевые взносы ФЛ с отрицательной корректировкой: итоги равны, расхождения нет."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Свод"]
+        row = self._svod_row(ws, "Целевые взносы ФЛ")
+        assert row[1] == row[3]    # БУ == ПУ
+        assert not row[5] and not row[6]   # ни суммы, ни дат расхождений
+
     def test_missing_dirs_creates_them_and_exits_0(self, tmp_path: Path):
         """Если директории данных отсутствуют, pipeline создаёт их и возвращает 0."""
         from npf_recon.config import Config

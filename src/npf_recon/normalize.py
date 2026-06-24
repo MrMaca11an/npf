@@ -60,15 +60,30 @@ def parse_number(value: object) -> float | None:
     if not s:
         return None
 
+    # Нормализуем спецсимволы минуса:
+    #   U+2212 (MINUS SIGN), U+2012..U+2015 (различные тире) → обычный дефис-минус.
+    s = re.sub(r"[−‒–—―]", "-", s)
+
+    # Удаляем валютные обозначения (₽, «руб», «руб.», «р.», «RUB») — встречаются в 1С.
+    s = re.sub(r"(?i)\s*(₽|руб\.?|р\.|rub)\s*$", "", s).strip()
+
     # Проверяем на NaN/nan
     if s.lower() in ("nan", "none", "-", ""):
         return None
 
-    # Обнаруживаем знак минус через скобки
+    # Обнаруживаем знак минус:
+    #   1) бухгалтерские скобки: «(1 234,56)» → отрицательное;
+    #   2) завершающий минус: «1 234,56-» (выгрузка 1С) → отрицательное;
+    #   3) ведущий «+» — просто отбрасываем.
     negative = False
     if s.startswith("(") and s.endswith(")"):
         negative = True
         s = s[1:-1].strip()
+    elif s.endswith("-"):
+        negative = True
+        s = s[:-1].strip()
+    elif s.startswith("+"):
+        s = s[1:].strip()
 
     # Убираем пробельные символы-разделители тысяч
     s_clean = re.sub(_SPACE_CHARS, "", s)

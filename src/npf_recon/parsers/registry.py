@@ -37,29 +37,42 @@ def match_rule(base_name: str, side: str) -> FileRule | None:
     return None
 
 
-def get_parser(rule: FileRule) -> Parser:
-    """
-    Возвращает экземпляр парсера по имени из правила.
+from functools import lru_cache
 
-    :param rule: FileRule из реестра.
-    :return:     готовый к работе Parser.
-    :raises ValueError: если парсер с таким именем не зарегистрирован.
+
+@lru_cache(maxsize=1)
+def _build_registry() -> dict[str, Parser]:
+    """
+    Строит реестр парсеров один раз (кэшируется на время работы процесса).
+
+    Экземпляры парсеров не хранят состояния между файлами, поэтому их можно
+    переиспользовать — это исключает повторное создание объектов на каждый файл.
     """
     # Импорт здесь, чтобы избежать циклических зависимостей
     from .excel_generic import ExcelGenericParser
     from .excel_vyplata import ExcelVyplataParser
     from .json_npo import JsonNpoParser
 
-    _registry: dict[str, Parser] = {
+    return {
         "excel_generic": ExcelGenericParser(),
         "vyplata": ExcelVyplataParser(),
         "json_npo": JsonNpoParser(),
     }
 
-    parser = _registry.get(rule.parser_name)
+
+def get_parser(rule: FileRule) -> Parser:
+    """
+    Возвращает экземпляр парсера по имени из правила.
+
+    :param rule: FileRule из реестра.
+    :return:     готовый к работе Parser (переиспользуемый синглтон).
+    :raises ValueError: если парсер с таким именем не зарегистрирован.
+    """
+    registry = _build_registry()
+    parser = registry.get(rule.parser_name)
     if parser is None:
         raise ValueError(
             f"Парсер '{rule.parser_name}' не зарегистрирован. "
-            f"Доступные парсеры: {list(_registry.keys())}"
+            f"Доступные парсеры: {list(registry.keys())}"
         )
     return parser

@@ -97,6 +97,53 @@ class TestParseNumber:
         # Формат format_amount: «312 455,75» должен быть разобран обратно
         assert parse_number("312 455,75") == pytest.approx(312_455.75)
 
+    # --- Расширенные форматы (умная нормализация) ---
+
+    def test_unicode_minus(self):
+        # U+2212 MINUS SIGN
+        assert parse_number("−500") == pytest.approx(-500.0)
+
+    def test_unicode_minus_with_decimals(self):
+        assert parse_number("−1 234,56") == pytest.approx(-1234.56)
+
+    def test_trailing_minus_accounting(self):
+        # Завершающий минус (выгрузка 1С): «1 234,56-» → отрицательное
+        assert parse_number("1 234,56-") == pytest.approx(-1234.56)
+
+    def test_trailing_minus_plain(self):
+        assert parse_number("1500.00-") == pytest.approx(-1500.0)
+
+    def test_leading_plus(self):
+        assert parse_number("+1000") == pytest.approx(1000.0)
+
+    def test_currency_ruble_symbol(self):
+        assert parse_number("1 234,56 ₽") == pytest.approx(1234.56)
+
+    def test_currency_rub_word(self):
+        assert parse_number("1 234,56 руб.") == pytest.approx(1234.56)
+
+    def test_currency_rub_latin(self):
+        assert parse_number("1000 RUB") == pytest.approx(1000.0)
+
+    def test_en_dash_is_empty(self):
+        # Прочерк «–» в ячейке означает отсутствие значения
+        assert parse_number("–") is None
+
+    def test_comma_thousands_three_digits(self):
+        # «12,345» — три цифры после запятой → разделитель тысяч
+        assert parse_number("12,345") == pytest.approx(12_345.0)
+
+    def test_comma_decimal_two_digits(self):
+        # «12,34» — две цифры → десятичный разделитель
+        assert parse_number("12,34") == pytest.approx(12.34)
+
+    def test_american_grouping(self):
+        # «100,000.00» — запятые тысячи, точка дробная
+        assert parse_number("100,000.00") == pytest.approx(100_000.0)
+
+    def test_paren_negative_american(self):
+        assert parse_number("(100,000.00)") == pytest.approx(-100_000.0)
+
 
 # ------------------------------------------------------------------
 # parse_date
@@ -200,3 +247,13 @@ class TestFormatAmount:
         val = -15_000.0
         formatted = format_amount(val)
         assert parse_number(formatted) == pytest.approx(val)
+
+    def test_large_negative(self):
+        assert format_amount(-1_234_567.89) == "(1 234 567,89)"
+
+    def test_small_value(self):
+        assert format_amount(5.0) == "5,00"
+
+    def test_trailing_minus_roundtrip(self):
+        # Бухгалтерский завершающий минус разбирается обратно
+        assert parse_number("1 234 567,89-") == pytest.approx(-1_234_567.89)

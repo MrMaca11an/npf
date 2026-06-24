@@ -189,6 +189,37 @@ class TestReconcile:
         assert row.diff_by_date[D1] == pytest.approx(5_000.0)
         assert row.diff_by_date[D3] == pytest.approx(15_000.0)
 
+    def test_net_zero_total_but_daily_diff(self):
+        """Итоги совпадают, но есть встречные дневные отклонения → дни в diff_dates."""
+        records = [
+            # БУ: 10.02=30000, 24.02=15000 (итог 45000)
+            _rec("Целевые взносы ЮЛ", D3, 30_000.0, "БУ"),
+            _rec("Целевые взносы ЮЛ", D4, 15_000.0, "БУ"),
+            # ПУ: 10.02=23000, 24.02=22000 (итог 45000 — равен БУ)
+            _rec("Целевые взносы ЮЛ", D3, 23_000.0, "ПУ"),
+            _rec("Целевые взносы ЮЛ", D4, 22_000.0, "ПУ"),
+        ]
+        by_ind = self._run(records)
+        row = by_ind["Целевые взносы ЮЛ"]
+        assert row.diff_total == pytest.approx(0.0)         # итоги равны
+        assert set(row.diff_dates) == {D3, D4}              # но дни отличаются
+        assert row.diff_by_date[D3] == pytest.approx(7_000.0)
+        assert row.diff_by_date[D4] == pytest.approx(-7_000.0)
+
+    def test_negative_correction_no_discrepancy(self):
+        """Отрицательная корректировка, равная в БУ и ПУ, не даёт расхождения."""
+        records = [
+            _rec("Целевые взносы ФЛ", D2, 8_500.0, "БУ"),
+            _rec("Целевые взносы ФЛ", D3, -1_500.0, "БУ"),
+            _rec("Целевые взносы ФЛ", D2, 8_500.0, "ПУ"),
+            _rec("Целевые взносы ФЛ", D3, -1_500.0, "ПУ"),
+        ]
+        by_ind = self._run(records)
+        row = by_ind["Целевые взносы ФЛ"]
+        assert row.bu.total == pytest.approx(7_000.0)
+        assert row.diff_total == pytest.approx(0.0)
+        assert row.diff_dates == []
+
     def test_fixed_order(self):
         """Порядок строк соответствует REPORT_INDICATORS."""
         from config.mappings import REPORT_INDICATORS
