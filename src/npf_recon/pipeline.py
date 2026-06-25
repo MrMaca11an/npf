@@ -17,6 +17,7 @@ from pathlib import Path
 
 from npf_recon.aggregate import aggregate
 from npf_recon.config import Config
+from npf_recon.llm_export import write_llm_export
 from npf_recon.normalize import format_amount
 from npf_recon.parsers.registry import get_parser, match_rule
 from npf_recon.reconcile import reconcile
@@ -118,9 +119,24 @@ def run(config: Config) -> int:
     )
 
     # ------------------------------------------------------------------
+    # 7. Обезличенный экспорт для внешней LLM (саммари + промт)
+    # ------------------------------------------------------------------
+    summary_path = config.resolved_summary_file()
+    prompt_path = config.resolved_prompt_file()
+    write_llm_export(
+        rows=recon_rows,
+        period_label=config.period_label,
+        summary_path=summary_path,
+        prompt_path=prompt_path,
+        eps=config.eps,
+    )
+
+    # ------------------------------------------------------------------
     # Итоговый вывод
     # ------------------------------------------------------------------
     print(f"\nОтчёт сохранён: {config.output_file}")
+    print(f"Обезличенное саммари (для LLM): {summary_path}")
+    print(f"Готовый промт (для LLM):        {prompt_path}")
     print(f"Период: {config.period_label}")
 
     # Показатель попадает в сводку расхождений, если отличается итог за период

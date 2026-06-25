@@ -28,6 +28,17 @@ class Config:
     output_file: Path     # Абсолютный путь к итоговому файлу отчёта
     period_label: str     # Метка периода (напр. «Февраль 2026»)
     eps: float            # Допуск для сравнения сумм
+    # Обезличенные артефакты для внешней LLM (если None — берутся рядом с отчётом)
+    summary_file: Path | None = None   # JSON-саммари (без перс. данных)
+    prompt_file: Path | None = None    # Готовый промт для LLM
+
+    def resolved_summary_file(self) -> Path:
+        """Путь к JSON-саммари (по умолчанию рядом с отчётом)."""
+        return self.summary_file or self.output_file.with_name("Саммари_БУ_ПУ.json")
+
+    def resolved_prompt_file(self) -> Path:
+        """Путь к файлу промта (по умолчанию рядом с отчётом)."""
+        return self.prompt_file or self.output_file.with_name("Промт_для_LLM.txt")
 
 
 def load_config(settings_path: Path | None = None) -> Config:

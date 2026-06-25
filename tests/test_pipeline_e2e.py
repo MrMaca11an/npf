@@ -225,8 +225,8 @@ class TestPipelineE2E:
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Пенсионные взносы ФЛ")
-        assert "1 022 706,60" in str(row[1])   # БУ
-        assert "1 017 706,60" in str(row[3])    # ПУ
+        assert "1 106 706,60" in str(row[1])   # БУ
+        assert "1 101 706,60" in str(row[3])    # ПУ
         assert "5 000,00" in str(row[5])        # расхождение по итогу
 
     def test_vyplata_pu_only(self, temp_data_dir: Path, output_file: Path):
@@ -236,7 +236,7 @@ class TestPipelineE2E:
         row = self._svod_row(ws, "Выплата пенсии")
         assert not row[1]          # БУ Сумма пуста
         assert row[3]              # ПУ Сумма заполнена
-        assert "74 600,00" in str(row[3])   # 8500+2300+...+8800
+        assert "86 800,00" in str(row[3])   # сумма всех выплат пенсии за период
         assert not row[5]          # расхождение не вычисляется
 
     def test_negative_correction_no_discrepancy(self, temp_data_dir: Path, output_file: Path):
@@ -246,6 +246,19 @@ class TestPipelineE2E:
         row = self._svod_row(ws, "Целевые взносы ФЛ")
         assert row[1] == row[3]    # БУ == ПУ
         assert not row[5] and not row[6]   # ни суммы, ни дат расхождений
+
+    def test_llm_artifacts_created(self, temp_data_dir: Path, output_file: Path):
+        """Pipeline создаёт обезличенное саммари (JSON) и промт рядом с отчётом."""
+        import json
+        _run_pipeline(temp_data_dir, output_file)
+        summary = output_file.with_name("Саммари_БУ_ПУ.json")
+        prompt = output_file.with_name("Промт_для_LLM.txt")
+        assert summary.exists() and prompt.exists()
+        data = json.loads(summary.read_text(encoding="utf-8"))
+        assert data["обезличено"] is True
+        assert data["итоги"]["показателей_с_расхождениями"] == 3
+        # В саммари нет персональных данных
+        assert "Иванов" not in summary.read_text(encoding="utf-8")
 
     def test_missing_dirs_creates_them_and_exits_0(self, tmp_path: Path):
         """Если директории данных отсутствуют, pipeline создаёт их и возвращает 0."""

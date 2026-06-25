@@ -39,6 +39,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Подробный лог (DEBUG).")
+    parser.add_argument("--menu", action="store_true",
+                        help="Интерактивное консольное меню (удобно для демонстрации).")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="Диагностика парсинга: показать разбор каждого файла.")
     parser.add_argument("--generate-sample", action="store_true",
                         help="Сгенерировать синтетические демо-данные перед сверкой.")
     parser.add_argument("--data-dir", metavar="PATH",
@@ -74,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.data_dir:
         os.environ["NPF_DATA_DIR"] = str(Path(args.data_dir).resolve())
 
+    # Интерактивное меню — отдельный режим
+    if args.menu:
+        from npf_recon.menu import run_menu
+        return run_menu()
+
     print("=" * 60)
     print("  Система сверки БУ-ПУ (НПФ)")
     print("=" * 60)
@@ -94,6 +103,11 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Директория ПУ: {config.pu_dir}")
     print(f"Директория БУ: {config.bu_dir}")
+
+    # Режим диагностики парсинга
+    if args.diagnose:
+        from npf_recon.diagnostics import run_diagnostics
+        return 0 if run_diagnostics(config) else 1
 
     return run(config)
 
