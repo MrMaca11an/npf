@@ -2,13 +2,14 @@
 Формирование итогового Excel-отчёта сверки БУ-ПУ.
 
 Лист «Свод»: сводная таблица с заголовком, 14 строк показателей,
-  суммами и датами по БУ, ПУ и расхождению.
+  итоговыми суммами по БУ и ПУ и расхождением (сумма + конкретные даты).
 Лист «Детализация»: строки с расхождениями по каждой дате.
 
 Структура заголовка (строки 1-3):
-  Строка 1: «Сверка БУ-ПУ. <Период>» (A1:G1 merged)
-  Строка 2: «Виды движений» (A2:A3 merged) | «БУ» (B2:C2) | «ПУ» (D2:E2) | «Расхождение» (F2:G2)
-  Строка 3: пусто (A3 — под merge) | Сумма | Дата | Сумма | Дата | Сумма | Дата
+  Строка 1: «Сверка БУ-ПУ. <Период>» (A1:E1 merged)
+  Строка 2: «Виды движений» (A2:A3) | «Бухгалтерский учёт» (B2:B3) |
+            «Персонифицированный учёт» (C2:C3) | «Расхождение» (D2:E2)
+  Строка 3: (под merge) | (под merge) | (под merge) | Сумма | Дата
   Строки 4-17: данные (14 показателей)
 """
 from __future__ import annotations
@@ -25,9 +26,7 @@ from openpyxl.styles import (
     PatternFill,
     Side,
 )
-from openpyxl.utils import get_column_letter, column_index_from_string
-
-from npf_recon.models import IndicatorSide, ReconRow
+from npf_recon.models import ReconRow
 from npf_recon.normalize import format_amount, format_date
 
 logger = logging.getLogger(__name__)
@@ -46,22 +45,14 @@ def _apply_border(cell) -> None:
 
 def _format_dates(dates: list[date]) -> str:
     """
-    Форматирует список дат для ячейки отчёта.
+    Форматирует список дат расхождений для ячейки отчёта.
 
-    При количестве дат <= 5 перечисляет через «, »; иначе показывает диапазон «min–max».
+    Перечисляет ВСЕ конкретные даты, в которые есть расхождение, через «, »
+    (диапазоны не используются — нужны именно конкретные даты).
     """
     if not dates:
         return ""
-    sorted_d = sorted(dates)
-    if len(sorted_d) <= 5:
-        return ", ".join(format_date(d) for d in sorted_d)
-    return f"{format_date(sorted_d[0])}–{format_date(sorted_d[-1])}"
-
-
-def _format_side_dates(side: IndicatorSide | None) -> str:
-    if side is None or not side.dates:
-        return ""
-    return _format_dates(side.dates)
+    return ", ".join(format_date(d) for d in sorted(dates))
 
 
 def write_report(
@@ -102,59 +93,42 @@ def _write_svod(
     ws.title = "Свод"
     bold = Font(bold=True)
 
-    # --- Строка 1: заголовок периода (A1:G1) ---
-    ws.merge_cells("A1:G1")
+    def _head(ref: str, text: str) -> None:
+        cell = ws[ref]
+        cell.value = text
+        cell.font = bold
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+        cell.fill = _HEADER_FILL
+        _apply_border(cell)
+
+    # --- Строка 1: заголовок периода (A1:E1) ---
+    ws.merge_cells("A1:E1")
     title_cell = ws["A1"]
     title_cell.value = f"Сверка БУ-ПУ. {period_label}"
     title_cell.font = Font(bold=True, size=13)
     title_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # --- Строка 2: блоки разделов ---
-    # A2:A3 — «Виды движений» (объединяем строки 2 и 3)
+    # --- Строки 2-3: шапка таблицы ---
+    # БУ и ПУ — по одной колонке итоговой суммы; Расхождение — Сумма + Дата.
     ws.merge_cells("A2:A3")
-    head_a = ws["A2"]
-    head_a.value = "Виды движений"
-    head_a.font = bold
-    head_a.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    head_a.fill = _HEADER_FILL
-    _apply_border(head_a)
-
-    # Блоки: (начальная колонка в букве, название)
-    block_defs = [
-        ("B", "Бухгалтерский учёт"),
-        ("D", "Персонифицированный учёт"),
-        ("F", "Расхождение"),
-    ]
-    for col_letter, label in block_defs:
-        col_idx = column_index_from_string(col_letter)
-        col_end = get_column_letter(col_idx + 1)
-        # Заголовок блока (строка 2)
-        merge_ref = f"{col_letter}2:{col_end}2"
-        ws.merge_cells(merge_ref)
-        cell = ws[f"{col_letter}2"]
-        cell.value = label
-        cell.font = bold
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.fill = _HEADER_FILL
-        _apply_border(cell)
-        # Правая ячейка того же merge — только бордер (остаётся MergedCell, не назначаем value)
-        _apply_border(ws[f"{col_end}2"])
-
-        # Подзаголовки «Сумма» / «Дата» (строка 3)
-        ws.cell(row=3, column=col_idx).value = "Сумма"
-        ws.cell(row=3, column=col_idx).font = bold
-        ws.cell(row=3, column=col_idx).alignment = Alignment(horizontal="center")
-        ws.cell(row=3, column=col_idx).fill = _HEADER_FILL
-        _apply_border(ws.cell(row=3, column=col_idx))
-
-        ws.cell(row=3, column=col_idx + 1).value = "Дата"
-        ws.cell(row=3, column=col_idx + 1).font = bold
-        ws.cell(row=3, column=col_idx + 1).alignment = Alignment(horizontal="center")
-        ws.cell(row=3, column=col_idx + 1).fill = _HEADER_FILL
-        _apply_border(ws.cell(row=3, column=col_idx + 1))
-
-    # Ячейка A3 — часть merged A2:A3, не трогаем value, только стиль
+    _head("A2", "Виды движений")
     _apply_border(ws["A3"])
+
+    ws.merge_cells("B2:B3")
+    _head("B2", "Бухгалтерский учёт")
+    _apply_border(ws["B3"])
+
+    ws.merge_cells("C2:C3")
+    _head("C2", "Персонифицированный учёт")
+    _apply_border(ws["C3"])
+
+    ws.merge_cells("D2:E2")
+    _head("D2", "Расхождение")
+    _apply_border(ws["E2"])
+    _head("D3", "Сумма")
+    _head("E3", "Дата")
 
     # --- Строки данных (строки 4-17) ---
     for data_row_idx, recon in enumerate(rows, start=4):
@@ -169,32 +143,29 @@ def _write_svod(
         has_any_discrep = has_total_discrep or bool(recon.diff_dates)
 
         row_data = [
-            # (значение, колонка 1-based)
-            (recon.indicator, 1),
-            (format_amount(bu.total) if bu else "", 2),
-            (_format_side_dates(bu), 3),
-            (format_amount(pu.total) if pu else "", 4),
-            (_format_side_dates(pu), 5),
-            (format_amount(recon.diff_total) if has_total_discrep else "", 6),
-            (_format_dates(recon.diff_dates) if recon.diff_dates else "", 7),
+            # (значение, колонка 1-based, выравнивание)
+            (recon.indicator, 1, "left"),
+            (format_amount(bu.total) if bu else "", 2, "right"),
+            (format_amount(pu.total) if pu else "", 3, "right"),
+            (format_amount(recon.diff_total) if has_total_discrep else "", 4, "right"),
+            (_format_dates(recon.diff_dates) if recon.diff_dates else "", 5, "left"),
         ]
 
-        for value, col_idx in row_data:
+        for value, col_idx, align in row_data:
             cell = ws.cell(row=data_row_idx, column=col_idx, value=value)
             cell.alignment = Alignment(
-                horizontal="left" if col_idx == 1 else "right",
-                wrap_text=True,
+                horizontal=align, vertical="top", wrap_text=True
             )
             _apply_border(cell)
-            if has_any_discrep and col_idx in (6, 7):
+            if has_any_discrep and col_idx in (4, 5):
                 cell.fill = _DISCREP_FILL
 
     # --- Ширины колонок ---
-    ws.column_dimensions["A"].width = 42
-    for col_letter in ("B", "D", "F"):
-        ws.column_dimensions[col_letter].width = 14
-    for col_letter in ("C", "E", "G"):
-        ws.column_dimensions[col_letter].width = 28
+    ws.column_dimensions["A"].width = 44
+    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["C"].width = 20
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 40
 
     ws.freeze_panes = "A4"
 

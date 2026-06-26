@@ -583,3 +583,115 @@ class TestJsonNpoParser:
         records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
         assert len(records) == 1
         assert records[0].indicator == "Целевые взносы ФЛ"
+
+    def test_payment_components_mapped(self, tmp_path: Path):
+        """Компоненты выплат НПО маппируются в строки выплат (БУ-сторона)."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_выплаты.json"
+        self._write_json(json_path, self._make_npo_data([
+            {
+                "date": "2026-02-10T00:00:00",
+                "amount": "0",
+                "components": [
+                    {"account": "390.11", "name": "Выплаты негосударственных пенсий НПО", "amount": "118061"},
+                    {"account": "390.11", "name": "Выплаты выкупных сумм НПО", "amount": "36085782.35"},
+                    {"account": "390.11", "name": "Выплаты наследуемых сумм НПО", "amount": "5000"},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        by_ind = {r.indicator: r.amount for r in records}
+        assert by_ind["Выплата пенсии"] == pytest.approx(118061.0)
+        assert by_ind["Выплата выкупных сумм"] == pytest.approx(36085782.35)
+        assert by_ind["Выплата наследуемых сумм"] == pytest.approx(5000.0)
+
+    def test_component_match_is_fuzzy(self, tmp_path: Path):
+        """Имя компонента с лишними пробелами/регистром всё равно сопоставляется."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_fuzzy.json"
+        self._write_json(json_path, self._make_npo_data([
+            {
+                "date": "2026-02-05",
+                "amount": "0",
+                "components": [
+                    {"account": "76.01", "name": "  пенсионные   взносы фл по договорам НПО ", "amount": "100"},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert len(records) == 1
+        assert records[0].indicator == "Пенсионные взносы ФЛ"
+
+
+# ------------------------------------------------------------------
+# Тесты excel_osv (оборотно-сальдовая ведомость, БУ Страховой резерв)
+# ------------------------------------------------------------------
+
+class TestExcelOsvParser:
+    """Тесты парсера ОСВ: показатель = Кредит − Дебет по дневным оборотам."""
+
+    def _make_osv_rule(self):
+        from config.mappings import FileRule
+        return FileRule(
+            name_contains="397.03 страховой резерв",
+            side="БУ",
+            fmt="excel",
+            parser_name="excel_osv",
+            params={"indicator": "Страховой резерв", "debit_col": "D", "credit_col": "E"},
+        )
+
+    def _write_osv(self, path: Path, rows: list[tuple]) -> None:
+        """rows: список (метка, дебет, кредит) для колонок A/D/E."""
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        # Шапка для авто-определения колонок оборотов
+        ws.cell(row=5, column=1, value="Счет")
+        ws.cell(row=5, column=4, value="Обороты за период")
+        ws.cell(row=6, column=4, value="Дебет")
+        ws.cell(row=6, column=5, value="Кредит")
+        r = 7
+        for label, debit, credit in rows:
+            ws.cell(row=r, column=1, value=label)
+            if debit is not None:
+                ws.cell(row=r, column=4, value=debit)
+            if credit is not None:
+                ws.cell(row=r, column=5, value=credit)
+            r += 1
+        wb.save(path)
+
+    def test_daily_credit_minus_debit(self, tmp_path: Path):
+        """Дневные обороты: сумма = Кредит − Дебет; итоговые строки пропущены."""
+        from npf_recon.parsers.excel_osv import ExcelOsvParser
+
+        path = tmp_path / "397.03 Страховой резерв Февраль_2026.xlsx"
+        self._write_osv(path, [
+            ("397.03", 2_000.0, 102_000.0),          # итог — без даты → пропуск
+            ("(Стратегии) Базовая", None, None),     # группа — пропуск
+            ("Обороты за 10.02.26", None, 50_000.0),  # +50 000
+            ("Обороты за 17.02.26", 5_000.0, 60_000.0),  # +55 000 (Кт−Дт)
+            ("Итого по стратегии", None, 100_000.0),  # подытог — без даты → пропуск
+        ])
+        records = ExcelOsvParser().parse(_make_raw(path, side="БУ"), self._make_osv_rule())
+        by_date = {r.date: r.amount for r in records}
+        assert by_date[datetime.date(2026, 2, 10)] == pytest.approx(50_000.0)
+        assert by_date[datetime.date(2026, 2, 17)] == pytest.approx(55_000.0)
+        # Итоговые/групповые строки не попали в записи
+        assert len(records) == 2
+        assert all(r.indicator == "Страховой резерв" for r in records)
+
+    def test_columns_autodetected(self, tmp_path: Path):
+        """Колонки оборотов определяются из шапки даже без явных параметров."""
+        from config.mappings import FileRule
+        from npf_recon.parsers.excel_osv import ExcelOsvParser
+
+        path = tmp_path / "397.03 Страховой резерв.xlsx"
+        self._write_osv(path, [("Обороты за 03.02.26", None, 7_000.0)])
+        rule = FileRule(
+            name_contains="397.03 страховой резерв", side="БУ", fmt="excel",
+            parser_name="excel_osv", params={"indicator": "Страховой резерв"},
+        )
+        records = ExcelOsvParser().parse(_make_raw(path, side="БУ"), rule)
+        assert len(records) == 1
+        assert records[0].amount == pytest.approx(7_000.0)

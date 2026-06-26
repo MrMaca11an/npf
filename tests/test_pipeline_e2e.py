@@ -126,12 +126,12 @@ class TestPipelineE2E:
 
         assert sr_row_idx is not None, "Строка 'Страховой резерв' не найдена в Свод"
 
-        # Колонка F (6) — «Расхождение Сумма»
-        discrep_sum = ws.cell(row=sr_row_idx, column=6).value
+        # Колонка D (4) — «Расхождение Сумма»
+        discrep_sum = ws.cell(row=sr_row_idx, column=4).value
         assert discrep_sum, "Расхождение по Страховому резерву должно быть непустым"
 
-        # Колонка G (7) — «Расхождение Дата»
-        discrep_date = ws.cell(row=sr_row_idx, column=7).value
+        # Колонка E (5) — «Расхождение Дата»
+        discrep_date = ws.cell(row=sr_row_idx, column=5).value
         assert discrep_date is not None and "17.02.2026" in str(discrep_date), \
             f"Ожидалась дата 17.02.2026 в колонке расхождений, получено: {discrep_date}"
 
@@ -143,8 +143,8 @@ class TestPipelineE2E:
 
         for row in ws.iter_rows(min_row=4, max_row=17):
             if row[0].value == "ИД":
-                bu_sum = row[1].value
-                pu_sum = row[3].value
+                bu_sum = row[1].value   # B — БУ Сумма
+                pu_sum = row[2].value   # C — ПУ Сумма
                 assert not bu_sum, f"БУ Сумма для ИД должна быть пустой, получено: {bu_sum}"
                 assert not pu_sum, f"ПУ Сумма для ИД должна быть пустой, получено: {pu_sum}"
                 return
@@ -202,8 +202,8 @@ class TestPipelineE2E:
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Целевые взносы ЮЛ")
         assert row is not None
-        bu_sum, pu_sum = row[1], row[3]
-        discrep_sum, discrep_dates = row[5], row[6]
+        bu_sum, pu_sum = row[1], row[2]       # B=БУ, C=ПУ
+        discrep_sum, discrep_dates = row[3], row[4]  # D=Расх.Сумма, E=Расх.Дата
         # Итоги БУ и ПУ совпадают
         assert bu_sum == pu_sum
         # Сумма расхождения пуста (итоги равны), но даты дневных отличий присутствуют
@@ -225,27 +225,27 @@ class TestPipelineE2E:
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Пенсионные взносы ФЛ")
-        assert "1 106 706,60" in str(row[1])   # БУ
-        assert "1 101 706,60" in str(row[3])    # ПУ
-        assert "5 000,00" in str(row[5])        # расхождение по итогу
+        assert "1 106 706,60" in str(row[1])   # B — БУ
+        assert "1 101 706,60" in str(row[2])    # C — ПУ
+        assert "5 000,00" in str(row[3])        # D — расхождение по итогу
 
-    def test_vyplata_pu_only(self, temp_data_dir: Path, output_file: Path):
-        """Выплаты присутствуют только в ПУ, сторона БУ пуста, расхождение не считается."""
+    def test_vyplata_both_sides_reconcile(self, temp_data_dir: Path, output_file: Path):
+        """Выплаты заполняются с обеих сторон (ПУ — из Excel, БУ — из JSON НПО) и сверяются."""
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Выплата пенсии")
-        assert not row[1]          # БУ Сумма пуста
-        assert row[3]              # ПУ Сумма заполнена
-        assert "86 800,00" in str(row[3])   # сумма всех выплат пенсии за период
-        assert not row[5]          # расхождение не вычисляется
+        assert row[1] and row[2]            # обе стороны заполнены
+        assert "86 800,00" in str(row[1])   # B — БУ
+        assert "86 800,00" in str(row[2])   # C — ПУ
+        assert not row[3]                   # итоги равны → расхождения нет
 
     def test_negative_correction_no_discrepancy(self, temp_data_dir: Path, output_file: Path):
         """Целевые взносы ФЛ с отрицательной корректировкой: итоги равны, расхождения нет."""
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Целевые взносы ФЛ")
-        assert row[1] == row[3]    # БУ == ПУ
-        assert not row[5] and not row[6]   # ни суммы, ни дат расхождений
+        assert row[1] == row[2]            # B=БУ == C=ПУ
+        assert not row[3] and not row[4]   # ни суммы, ни дат расхождений
 
     def test_llm_artifacts_created(self, temp_data_dir: Path, output_file: Path):
         """Pipeline создаёт обезличенное саммари (JSON) и промт рядом с отчётом."""

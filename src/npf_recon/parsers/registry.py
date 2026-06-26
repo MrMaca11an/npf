@@ -50,11 +50,13 @@ def _build_registry() -> dict[str, Parser]:
     """
     # Импорт здесь, чтобы избежать циклических зависимостей
     from .excel_generic import ExcelGenericParser
+    from .excel_osv import ExcelOsvParser
     from .excel_vyplata import ExcelVyplataParser
     from .json_npo import JsonNpoParser
 
     return {
         "excel_generic": ExcelGenericParser(),
+        "excel_osv": ExcelOsvParser(),
         "vyplata": ExcelVyplataParser(),
         "json_npo": JsonNpoParser(),
     }

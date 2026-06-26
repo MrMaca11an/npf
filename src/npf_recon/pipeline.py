@@ -18,7 +18,7 @@ from pathlib import Path
 from npf_recon.aggregate import aggregate
 from npf_recon.config import Config
 from npf_recon.llm_export import write_llm_export
-from npf_recon.normalize import format_amount
+from npf_recon.normalize import format_amount, format_date
 from npf_recon.parsers.registry import get_parser, match_rule
 from npf_recon.reconcile import reconcile
 from npf_recon.report import write_report
@@ -72,11 +72,14 @@ def run(config: Config) -> int:
     # 3. Парсинг файлов
     # ------------------------------------------------------------------
     all_records = []
-    skipped = []
+    skipped: list[str] = []
+    # Счётчики по сторонам: {сторона: [файлов, записей]}
+    side_stats: dict[str, list[int]] = {"ПУ": [0, 0], "БУ": [0, 0]}
     for raw in raw_docs:
         rule = match_rule(raw.base_name, raw.side)
         if rule is None:
-            logger.warning(
+            # Пропущенные файлы перечисляются в итоговой сводке — здесь только debug.
+            logger.debug(
                 "Файл не соответствует ни одному правилу [%s]: %s — пропускаем",
                 raw.side, raw.path.name
             )
@@ -85,31 +88,22 @@ def run(config: Config) -> int:
         parser = get_parser(rule)
         records = parser.parse(raw, rule)
         all_records.extend(records)
-
-    print(f"\nОбработано файлов: {len(raw_docs) - len(skipped)}")
-    if skipped:
-        print(f"Пропущено (нет правила): {len(skipped)}")
-        for name in skipped:
-            print(f"  — {name}")
+        stat = side_stats.setdefault(raw.side, [0, 0])
+        stat[0] += 1
+        stat[1] += len(records)
 
     if not all_records:
         print("\n⚠  Не удалось извлечь ни одной записи из файлов.")
         return 1
 
-    print(f"Итого записей: {len(all_records)}")
-
     # ------------------------------------------------------------------
-    # 4. Агрегация
+    # 4-5. Агрегация и сверка
     # ------------------------------------------------------------------
     aggregated = aggregate(all_records)
-
-    # ------------------------------------------------------------------
-    # 5. Сверка
-    # ------------------------------------------------------------------
     recon_rows = reconcile(aggregated, eps=config.eps)
 
     # ------------------------------------------------------------------
-    # 6. Формирование отчёта
+    # 6-7. Отчёт + обезличенный экспорт для внешней LLM
     # ------------------------------------------------------------------
     write_report(
         rows=recon_rows,
@@ -117,10 +111,6 @@ def run(config: Config) -> int:
         period_label=config.period_label,
         eps=config.eps,
     )
-
-    # ------------------------------------------------------------------
-    # 7. Обезличенный экспорт для внешней LLM (саммари + промт)
-    # ------------------------------------------------------------------
     summary_path = config.resolved_summary_file()
     prompt_path = config.resolved_prompt_file()
     write_llm_export(
@@ -131,31 +121,63 @@ def run(config: Config) -> int:
         eps=config.eps,
     )
 
-    # ------------------------------------------------------------------
-    # Итоговый вывод
-    # ------------------------------------------------------------------
-    print(f"\nОтчёт сохранён: {config.output_file}")
-    print(f"Обезличенное саммари (для LLM): {summary_path}")
-    print(f"Готовый промт (для LLM):        {prompt_path}")
-    print(f"Период: {config.period_label}")
+    _print_summary(config, side_stats, skipped, recon_rows)
+    return 0
 
-    # Показатель попадает в сводку расхождений, если отличается итог за период
-    # ИЛИ есть хотя бы один день с дневным расхождением (даже при равных итогах).
+
+def _signed_amount(x: float) -> str:
+    """Форматирует расхождение со знаком: «+15 000,00» / «−5 000,00»."""
+    sign = "+" if x > 0 else "−"
+    return f"{sign}{format_amount(abs(x))}"
+
+
+def _print_summary(
+    config: Config,
+    side_stats: dict[str, list[int]],
+    skipped: list[str],
+    recon_rows: list,
+) -> None:
+    """Печатает компактную структурированную сводку результата."""
+    line = "─" * 60
+
     def _has_discrep(r) -> bool:
         total_diff = r.diff_total is not None and abs(r.diff_total) > config.eps
         return total_diff or bool(r.diff_dates)
 
     with_discrep = [r for r in recon_rows if _has_discrep(r)]
+
+    print(f"\n{line}")
+    print(f"  СВЕРКА БУ ↔ ПУ — {config.period_label}")
+    print(line)
+
+    # Источники
+    print("  Источники:")
+    for side in ("ПУ", "БУ"):
+        files, recs = side_stats.get(side, [0, 0])
+        print(f"    {side}   файлов: {files:>2}   записей: {recs:>4}")
+    if skipped:
+        print(f"    Пропущено (нет правила): {len(skipped)}")
+        for name in skipped:
+            print(f"        · {name}")
+
+    # Результат сверки
+    print("\n  Результат:")
     if with_discrep:
-        print(f"\nПоказатели с расхождениями ({len(with_discrep)}):")
+        print(f"    Расхождения по {len(with_discrep)} показателям:")
+        name_w = max(len(r.indicator) for r in with_discrep)
         for r in with_discrep:
-            dates_str = ", ".join(d.strftime("%d.%m.%Y") for d in r.diff_dates)
+            dates_str = ", ".join(format_date(d) for d in sorted(r.diff_dates))
             if r.diff_total is not None and abs(r.diff_total) > config.eps:
-                total_str = format_amount(r.diff_total)
+                total_str = f"БУ−ПУ = {_signed_amount(r.diff_total):>14}"
             else:
                 total_str = "итоги равны, отличия по дням"
-            print(f"  — {r.indicator}: {total_str} ({dates_str})")
+            print(f"    • {r.indicator:<{name_w}}  {total_str}   {dates_str}")
     else:
-        print("\nРасхождений не обнаружено.")
+        print("    Расхождений не обнаружено.")
 
-    return 0
+    # Файлы результата
+    print("\n  Файлы:")
+    print(f"    Отчёт:    {config.output_file}")
+    print(f"    Саммари:  {config.resolved_summary_file()}")
+    print(f"    Промт:    {config.resolved_prompt_file()}")
+    print(line)

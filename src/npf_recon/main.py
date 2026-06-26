@@ -20,8 +20,14 @@ from npf_recon.pipeline import run
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Настраивает форматирование логов."""
-    level = logging.DEBUG if verbose else logging.INFO
+    """
+    Настраивает логи.
+
+    По умолчанию консоль чистая: показываются только предупреждения и ошибки,
+    а основной ход работы выводит pipeline через print() компактным блоком.
+    Флаг -v включает подробный DEBUG-лог (пофайловый разбор, сверка по строкам).
+    """
+    level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -83,10 +89,6 @@ def main(argv: list[str] | None = None) -> int:
         from npf_recon.menu import run_menu
         return run_menu()
 
-    print("=" * 60)
-    print("  Система сверки БУ-ПУ (НПФ)")
-    print("=" * 60)
-
     if args.generate_sample:
         data_dir = Path(args.data_dir).resolve() if args.data_dir else None
         _generate_sample(data_dir)
@@ -100,9 +102,6 @@ def main(argv: list[str] | None = None) -> int:
         config.eps = args.eps
     if args.output:
         config.output_file = Path(args.output).resolve()
-
-    print(f"Директория ПУ: {config.pu_dir}")
-    print(f"Директория БУ: {config.bu_dir}")
 
     # Режим диагностики парсинга
     if args.diagnose:

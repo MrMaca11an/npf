@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from config.mappings import FileRule
@@ -37,6 +38,37 @@ from npf_recon.sources.base import RawDocument
 from .base import Parser
 
 logger = logging.getLogger(__name__)
+
+
+def _norm(value: object) -> str:
+    """Нормализует имя компонента: нижний регистр, схлопывание пробелов."""
+    return re.sub(r"\s+", " ", str(value)).strip().lower()
+
+
+def _build_matcher(component_map: dict[str, str]):
+    """
+    Строит функцию сопоставления имени компонента с показателем.
+
+    Имя в файле может слегка отличаться от ключа маппинга, поэтому сопоставление
+    идёт устойчиво:
+      1) точное совпадение (по нормализованному имени);
+      2) совпадение по подстроке (ключ содержится в имени компонента);
+         при нескольких совпадениях выигрывает самый длинный (специфичный) ключ.
+    """
+    norm_map = {_norm(k): v for k, v in component_map.items()}
+    # Длинные ключи проверяем первыми — «...ФЛ по договорам НПО» специфичнее «...ФЛ».
+    keys_by_len = sorted(norm_map, key=len, reverse=True)
+
+    def match(name: str) -> str | None:
+        key = _norm(name)
+        if key in norm_map:
+            return norm_map[key]
+        for k in keys_by_len:
+            if k in key:
+                return norm_map[k]
+        return None
+
+    return match
 
 
 class JsonNpoParser(Parser):
@@ -49,6 +81,7 @@ class JsonNpoParser(Parser):
 
     def parse(self, raw: RawDocument, rule: FileRule) -> list[Record]:
         component_map: dict[str, str] = rule.params["component_map"]
+        match_indicator = _build_matcher(component_map)
 
         try:
             with open(raw.path, encoding="utf-8") as f:
@@ -77,7 +110,7 @@ class JsonNpoParser(Parser):
             components = item.get("components", [])
             for comp in components:
                 comp_name = str(comp.get("name", "")).strip()
-                indicator = component_map.get(comp_name)
+                indicator = match_indicator(comp_name)
                 if indicator is None:
                     logger.debug(
                         "Компонент '%s' не в маппинге, пропускаем", comp_name

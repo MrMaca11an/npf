@@ -158,6 +158,75 @@ def write_generic_excel(
 
 
 # ==================================================================
+# Писатель оборотно-сальдовой ведомости (ОСВ) — БУ «Страховой резерв»
+# ==================================================================
+def write_osv_excel(path: Path, daily_net: dict[date, float]) -> None:
+    """
+    Пишет реалистичную ОСВ по счёту 397.03: служебная шапка, строки оборотов
+    по дням «Обороты за DD.MM.YY» с колонками Дебет/Кредит, итоговые строки.
+
+    Показатель = Кредит − Дебет. Для большинства дней оборот идёт по Кредиту,
+    но на одну дату добавляется Дебет (с компенсацией в Кредите) — проверка
+    корректного вычитания. Итоговые строки без даты должны игнорироваться.
+
+    Колонки: A=счёт/метка, B/C=сальдо нач (Дт/Кт), D/E=обороты (Дт/Кт),
+             F/G=сальдо кон (Дт/Кт).
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "ОСВ"
+
+    ws.cell(row=1, column=1, value='АО "НПФ Пример"')
+    ws.cell(row=2, column=1,
+            value="Оборотно-сальдовая ведомость по счету (пост. 803-П) 397.03 "
+                  "за Февраль 2026 г.")
+    ws.cell(row=3, column=1, value="Выводимые данные: БУ (данные бухгалтерского учета)")
+
+    # Шапка таблицы (строки 5-6) — нужна для авто-определения колонок оборотов
+    ws.cell(row=5, column=1, value="Счет")
+    ws.cell(row=5, column=2, value="Сальдо на начало периода")
+    ws.cell(row=5, column=4, value="Обороты за период")
+    ws.cell(row=5, column=6, value="Сальдо на конец периода")
+    for col, label in ((2, "Дебет"), (3, "Кредит"), (4, "Дебет"),
+                       (5, "Кредит"), (6, "Дебет"), (7, "Кредит")):
+        ws.cell(row=6, column=col, value=label)
+
+    total_net = round(sum(daily_net.values()), 2)
+    extra_debit_date = date(2026, 2, 7)  # день с оборотом и по Дебету
+
+    # Итоговая строка по счёту (без даты → парсер её пропустит)
+    ws.cell(row=7, column=1, value="397.03")
+    ws.cell(row=7, column=4, value=2_000.00)             # обороты Дебет (итог)
+    ws.cell(row=7, column=5, value=total_net + 2_000.00)  # обороты Кредит (итог)
+
+    # Группировка по стратегии (метка без даты → пропуск)
+    r = 8
+    ws.cell(row=r, column=1, value="(Стратегии) Базовая")
+    r += 1
+
+    ds = cycle(["dd.mm.yy"])
+    for d in sorted(daily_net):
+        net = daily_net[d]
+        if d == extra_debit_date:
+            debit, credit = 2_000.00, round(net + 2_000.00, 2)
+        else:
+            debit, credit = None, net
+        ws.cell(row=r, column=1, value=f"Обороты за {_render_date(d, next(ds))}")
+        if debit is not None:
+            ws.cell(row=r, column=4, value=debit)
+        ws.cell(row=r, column=5, value=credit)
+        r += 1
+
+    # Подытог по стратегии (без даты → пропуск)
+    ws.cell(row=r, column=1, value="Итого по стратегии")
+    ws.cell(row=r, column=5, value=total_net)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    _print_created(path)
+
+
+# ==================================================================
 # Писатель файла «Выплата»
 # ==================================================================
 def write_vyplata_excel(path: Path, vyplata_rows: list[tuple]) -> None:
@@ -316,6 +385,9 @@ def generate(data_dir: Path | None = None) -> None:
     NP, VR, VN = ("Негосударственная пенсия",
                   "Выкупная сумма (Расторжение)",
                   "Выкупная сумма (Наследникам)")
+    # Соответствие ВидВыплат → показатель (для расчёта БУ-стороны выплат из JSON)
+    _VYPL_IND = {NP: "Выплата пенсии", VR: "Выплата выкупных сумм",
+                 VN: "Выплата наследуемых сумм"}
     vyplata_rows = [
         (date(2026, 2, 1), NP, 8_500.00), (date(2026, 2, 1), NP, 2_300.00),
         (date(2026, 2, 3), NP, 7_200.00), (date(2026, 2, 5), NP, 6_400.00),
@@ -336,11 +408,19 @@ def generate(data_dir: Path | None = None) -> None:
     _write_noise_files(pu_dir)
     print()
 
+    # БУ-сторона выплат берётся из тех же данных НПО и совпадает с ПУ (демонстрация
+    # того, что строки выплат теперь заполняются с обеих сторон и сверяются).
+    pay_daily: dict[str, dict[date, float]] = {
+        "Выплата пенсии": {}, "Выплата выкупных сумм": {}, "Выплата наследуемых сумм": {}}
+    for d, type_name, amount in vyplata_rows:
+        ind = _VYPL_IND.get(type_name)
+        if d is None or amount is None or ind is None:
+            continue
+        pay_daily[ind][d] = round(pay_daily[ind].get(d, 0.0) + amount, 2)
+
     # ---------------- БУ ----------------
-    write_generic_excel(
-        bu_dir / "397.03 Страховой резерв Февраль_2026.xlsx", "Страховой резерв",
-        _split_rows(SR_BU), amount_col_idx=8,                                       # I
-        date_styles=["datetime", "dd.mm.yyyy"], amount_styles=["nbsp", "space"])
+    # БУ «Страховой резерв» — оборотно-сальдовая ведомость (Кредит − Дебет).
+    write_osv_excel(bu_dir / "397.03 Страховой резерв Февраль_2026.xlsx", SR_BU)
 
     write_npo_json(
         bu_dir / "НПО_Февраль2026.json",
@@ -349,6 +429,9 @@ def generate(data_dir: Path | None = None) -> None:
             "Пенсионные взносы ЮЛ по договорам НПО": PV_UL,
             "Целевые взносы ФЛ": CV_FL,
             "Целевые взносы ЮЛ": CV_UL_BU,
+            "Выплаты негосударственных пенсий НПО": pay_daily["Выплата пенсии"],
+            "Выплаты выкупных сумм НПО": pay_daily["Выплата выкупных сумм"],
+            "Выплаты наследуемых сумм НПО": pay_daily["Выплата наследуемых сумм"],
         })
 
     print()
