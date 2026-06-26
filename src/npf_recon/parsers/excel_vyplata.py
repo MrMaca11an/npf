@@ -38,6 +38,52 @@ def _as_aliases(value: object) -> list[str]:
     return [str(value)]
 
 
+def _alnum(value: object) -> str:
+    """Агрессивная нормализация: только буквы/цифры в нижнем регистре.
+
+    Снимает различия в пробелах и пунктуации:
+      «Выкупная сумма(Расторжение)» и «Выкупная сумма (Расторжение)»
+      → «выкупнаясуммарасторжение».
+    """
+    return re.sub(r"[^0-9a-zа-яё]", "", str(value).lower())
+
+
+def _build_type_matcher(params: dict):
+    """
+    Строит функцию сопоставления значения ВидВыплат с показателем, устойчивую к
+    опечаткам, пробелам и пунктуации реальных выгрузок.
+
+    Порядок проверки:
+      1) точное совпадение по агрессивно-нормализованному значению (снимает
+         различия в пробелах/пунктуации, напр. «сумма(» vs «сумма (»);
+      2) правила по ключевым словам (переживают опечатки в середине слова,
+         напр. «Негосударсвенная пенсия» → ключ «пенси»);
+      3) запасной вариант — вхождение по подстроке (выигрывает длинный ключ).
+    """
+    type_map: dict[str, str] = params.get("type_map", {})
+    keyword_rules = params.get("type_keyword_rules") or []
+
+    norm_exact = {_alnum(k): v for k, v in type_map.items()}
+    norm_rules = [([_alnum(k) for k in kws], ind) for kws, ind in keyword_rules]
+    keys_by_len = sorted((k for k in norm_exact if k), key=len, reverse=True)
+
+    def match(value: object) -> str | None:
+        v = _alnum(value)
+        if not v:
+            return None
+        if v in norm_exact:
+            return norm_exact[v]
+        for kws, indicator in norm_rules:
+            if all(kw in v for kw in kws):
+                return indicator
+        for key in keys_by_len:
+            if key in v or v in key:
+                return norm_exact[key]
+        return None
+
+    return match
+
+
 class ExcelVyplataParser(Parser):
     """
     Парсер файла выплат (ПУ).
@@ -56,7 +102,7 @@ class ExcelVyplataParser(Parser):
         date_aliases = _as_aliases(params["date_col_header"])
         type_aliases = _as_aliases(params["type_col_header"])
         amount_aliases = _as_aliases(params["amount_col_header"])
-        type_map: dict[str, str] = params["type_map"]
+        match_type = _build_type_matcher(params)
 
         try:
             df = pd.read_excel(
@@ -96,9 +142,6 @@ class ExcelVyplataParser(Parser):
             )
             return []
 
-        # Нормализованный индекс видов выплат — устойчив к регистру/пробелам.
-        norm_type_map = {_norm_header(k): v for k, v in type_map.items()}
-
         records: list[Record] = []
         for idx, row in df.iterrows():
             raw_date = row[date_col]
@@ -110,7 +153,7 @@ class ExcelVyplataParser(Parser):
                 continue
 
             type_str = str(raw_type).strip() if raw_type is not None else ""
-            indicator = norm_type_map.get(_norm_header(type_str))
+            indicator = match_type(type_str)
             if indicator is None:
                 logger.debug(
                     "%s строка %s: вид выплаты '%s' не в маппинге, пропускаем",

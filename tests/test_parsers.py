@@ -47,7 +47,7 @@ def _make_generic_rule(indicator: str, date_col: int, amount_col: int, side: str
 
 
 def _make_vyplata_rule():
-    from config.mappings import FileRule, VYPLATA_TYPE_MAP
+    from config.mappings import FileRule, VYPLATA_TYPE_MAP, VYPLATA_KEYWORD_RULES
     return FileRule(
         name_contains="выплата",
         side="ПУ",
@@ -58,6 +58,7 @@ def _make_vyplata_rule():
             "type_col_header": "ВидВыплат",
             "amount_col_header": "Сумма",
             "type_map": VYPLATA_TYPE_MAP,
+            "type_keyword_rules": VYPLATA_KEYWORD_RULES,
         },
     )
 
@@ -289,6 +290,35 @@ class TestExcelVyplataParser:
         assert "Выплата наследуемых сумм" in indicators
         # «Прочие выплаты» должна быть пропущена
         assert all(r.indicator != "Прочие выплаты" for r in records)
+
+    def test_real_world_typos_and_spacing(self, tmp_path: Path):
+        """Реальные значения ВидВыплат: опечатка и отсутствие пробела перед скобкой."""
+        from npf_recon.parsers.excel_vyplata import ExcelVyplataParser
+
+        xlsx = tmp_path / "Выплата (пенсия, ВС, НС).xlsx"
+        self._write_vyplata(xlsx, [
+            # «Негосударсвенная» — опечатка (нет «т»); скобки без пробела
+            [1, datetime.date(2026, 2, 2), "Негосударсвенная пенсия", "ДПО-1", "И.", 2_700.0],
+            [2, datetime.date(2026, 2, 3), "Выкупная сумма(Расторжение)", "ДПО-2", "П.", 1_622.55],
+            [3, datetime.date(2026, 2, 5), "Выкупная сумма(Наследникам)", "ДПО-3", "С.", 5_000.0],
+        ])
+        records = ExcelVyplataParser().parse(_make_raw(xlsx), _make_vyplata_rule())
+        by_ind = {r.indicator: r.amount for r in records}
+        assert by_ind["Выплата пенсии"] == pytest.approx(2_700.0)
+        assert by_ind["Выплата выкупных сумм"] == pytest.approx(1_622.55)
+        assert by_ind["Выплата наследуемых сумм"] == pytest.approx(5_000.0)
+
+    def test_negative_payment_amounts(self, tmp_path: Path):
+        """Отрицательные суммы выплат (возвраты в реестре) разбираются со знаком."""
+        from npf_recon.parsers.excel_vyplata import ExcelVyplataParser
+
+        xlsx = tmp_path / "Выплата_возврат.xlsx"
+        self._write_vyplata(xlsx, [
+            [1, datetime.date(2026, 2, 2), "Негосударсвенная пенсия", "ДПО-1", "И.", "-2 700,00"],
+        ])
+        records = ExcelVyplataParser().parse(_make_raw(xlsx), _make_vyplata_rule())
+        assert len(records) == 1
+        assert records[0].amount == pytest.approx(-2_700.0)
 
     def test_string_dates(self, tmp_path: Path):
         """Строковые даты в колонке «Дата операции»."""
