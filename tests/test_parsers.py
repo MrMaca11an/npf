@@ -64,13 +64,13 @@ def _make_vyplata_rule():
 
 
 def _make_npo_rule():
-    from config.mappings import FileRule, NPO_COMPONENT_MAP
+    from config.mappings import FileRule, NPO_COMPONENT_MAP, NPO_DEDUCTION_MAP
     return FileRule(
         name_contains="нпо",
         side="БУ",
         fmt="json",
         parser_name="json_npo",
-        params={"component_map": NPO_COMPONENT_MAP},
+        params={"component_map": NPO_COMPONENT_MAP, "deduction_map": NPO_DEDUCTION_MAP},
     )
 
 
@@ -635,6 +635,32 @@ class TestJsonNpoParser:
         assert by_ind["Выплата пенсии"] == pytest.approx(118061.0)
         assert by_ind["Выплата выкупных сумм"] == pytest.approx(36085782.35)
         assert by_ind["Выплата наследуемых сумм"] == pytest.approx(5000.0)
+
+    def test_returns_are_deducted(self, tmp_path: Path):
+        """Возвраты вычитаются из своей категории (отрицательная сумма)."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_возвраты.json"
+        self._write_json(json_path, self._make_npo_data([
+            {
+                "date": "2026-02-11T00:00:00",
+                "amount": "0",
+                "components": [
+                    {"account": "390.02", "name": "Пенсионные взносы ФЛ по договорам НПО", "amount": "25753065.43"},
+                    {"account": "390.02", "name": "Возврат клиенту ошибочных взносов (в составе эл.реестра)", "amount": "173311"},
+                    {"account": "390.11", "name": "Выплаты негосударственных пенсий НПО", "amount": "2727350.86"},
+                    {"account": "390.11", "name": "Возврат в Фонд выплаченной пенсии (по распоряжению)", "amount": "5000"},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        d = datetime.date(2026, 2, 11)
+        # Взнос (+) и возврат (−) попадают в один показатель — суммой даёт нетто
+        pv = [r.amount for r in records if r.indicator == "Пенсионные взносы ФЛ"]
+        assert sorted(pv) == [pytest.approx(-173311.0), pytest.approx(25753065.43)]
+        pay = [r.amount for r in records if r.indicator == "Выплата пенсии"]
+        assert sorted(pay) == [pytest.approx(-5000.0), pytest.approx(2727350.86)]
+        assert all(r.date == d for r in records)
 
     def test_component_match_is_fuzzy(self, tmp_path: Path):
         """Имя компонента с лишними пробелами/регистром всё равно сопоставляется."""

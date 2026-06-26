@@ -81,7 +81,9 @@ class JsonNpoParser(Parser):
 
     def parse(self, raw: RawDocument, rule: FileRule) -> list[Record]:
         component_map: dict[str, str] = rule.params["component_map"]
-        match_indicator = _build_matcher(component_map)
+        deduction_map: dict[str, str] = rule.params.get("deduction_map", {})
+        match_add = _build_matcher(component_map)
+        match_deduct = _build_matcher(deduction_map)
 
         try:
             with open(raw.path, encoding="utf-8") as f:
@@ -110,7 +112,13 @@ class JsonNpoParser(Parser):
             components = item.get("components", [])
             for comp in components:
                 comp_name = str(comp.get("name", "")).strip()
-                indicator = match_indicator(comp_name)
+                # Сначала — обычные показатели (прибавляются), затем возвраты
+                # (вычитаются из той же категории).
+                indicator = match_add(comp_name)
+                sign = 1.0
+                if indicator is None:
+                    indicator = match_deduct(comp_name)
+                    sign = -1.0
                 if indicator is None:
                     logger.debug(
                         "Компонент '%s' не в маппинге, пропускаем", comp_name
@@ -124,6 +132,10 @@ class JsonNpoParser(Parser):
                         comp_name, date
                     )
                     continue
+
+                # Возврат всегда уменьшает показатель — берём по модулю со знаком «−».
+                if sign < 0:
+                    amount = -abs(amount)
 
                 records.append(
                     Record(
