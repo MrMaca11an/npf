@@ -22,6 +22,22 @@ from .base import Parser
 logger = logging.getLogger(__name__)
 
 
+# Маркеры итоговых/служебных строк — такие строки НЕ суммируются, чтобы итог
+# показателя собирался строго из дневных данных, а не из готовой строки «Итого».
+_TOTAL_MARKERS = ("итого", "всего", "подытог", "оборот за период", "сальдо")
+
+
+def _is_total_row(row) -> bool:
+    """True, если строка содержит маркер итога (служебная строка-итог)."""
+    for value in row:
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if any(marker in text for marker in _TOTAL_MARKERS):
+            return True
+    return False
+
+
 def _resolve_col(spec: object) -> int:
     """
     Приводит спецификацию колонки к 0-based индексу.
@@ -72,6 +88,12 @@ class ExcelGenericParser(Parser):
 
         records: list[Record] = []
         for idx, row in df.iterrows():
+            # Служебные строки-итоги пропускаем, чтобы не задвоить суммы:
+            # итог показателя должен собираться только из дневных операций.
+            if _is_total_row(row):
+                logger.debug("%s строка %s: строка-итог, пропускаем", raw.path.name, idx)
+                continue
+
             raw_date = row.iloc[date_col] if date_col < len(row) else None
             raw_amount = row.iloc[amount_col] if amount_col < len(row) else None
 

@@ -143,12 +143,12 @@ def _write_svod(
         # (взаимно компенсирующиеся отклонения по дням).
         has_any_discrep = has_total_discrep or bool(recon.diff_dates)
 
-        # «Сумма расхождения» — это общая нетто-разница БУ − ПУ за период.
-        # Показываем её при ЛЮБОМ расхождении (по итогу или по дням). Если итоги
-        # совпали, а отличаются только дни, значение равно 0,00 — это и есть
-        # «общая разница»: дневные отклонения взаимно компенсируются, их разбивка
-        # приведена на листе «Детализация».
-        if recon.diff_total is not None and has_any_discrep:
+        # «Сумма расхождения» = разница между колонками БУ и ПУ по строке
+        # (БУ_итог − ПУ_итог за период). Итоги БУ и ПУ собираются суммированием
+        # распарсенных данных по дням (см. IndicatorSide.from_records), поэтому
+        # это и есть общая разница между источниками. Заполняется всегда, когда
+        # присутствуют обе стороны (diff_total вычислен).
+        if recon.diff_total is not None:
             diff_sum_str = format_amount(recon.diff_total)
         else:
             diff_sum_str = ""
@@ -200,62 +200,51 @@ def _write_details(
         cell.alignment = Alignment(horizontal="center")
         _apply_border(cell)
 
-    def _row(row_idx: int, values: list, *, align_amounts: bool = True) -> None:
-        for col_idx, value in enumerate(values, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=value)
-            cell.alignment = Alignment(
-                horizontal="left" if (col_idx <= 2 or not align_amounts) else "right"
-            )
-            _apply_border(cell)
-
     detail_row = 2
-    # Каждый показатель — отдельный блок: дневные строки (сворачиваемая группа),
-    # затем строка-итог по показателю, затем пустая строка-разделитель.
+    # Каждый показатель — отдельный блок: строка-заголовок с НАЗВАНИЕМ показателя
+    # сверху (без сумм), под ней — дневные строки расхождений (сворачиваемая
+    # группа), затем пустая строка-разделитель.
     for recon in rows:
         if not recon.diff_dates:
             continue
 
-        group_start = detail_row
+        # --- Строка-заголовок группы: только название показателя, сверху ---
+        header_cell = ws.cell(row=detail_row, column=1, value=recon.indicator)
+        header_cell.font = bold
+        for col_idx in range(1, 6):
+            c = ws.cell(row=detail_row, column=col_idx)
+            c.fill = _SUBTOTAL_FILL
+            _apply_border(c)
+        detail_row += 1
+
+        # --- Дневные строки расхождений (без названия показателя) ---
         for d in sorted(recon.diff_dates):
             bu_val = recon.bu.daily.get(d, 0.0) if recon.bu else 0.0
             pu_val = recon.pu.daily.get(d, 0.0) if recon.pu else 0.0
             diff_val = recon.diff_by_date.get(d)
 
-            _row(detail_row, [
-                recon.indicator,
+            values = [
+                "",                       # название — только в заголовке группы
                 format_date(d),
                 format_amount(bu_val),
                 format_amount(pu_val),
                 format_amount(diff_val),
-            ])
-            # Подсветка ячейки разницы
-            ws.cell(row=detail_row, column=5).fill = _DISCREP_FILL
-            # Группировка дневных строк (можно свернуть «−» в Excel)
+            ]
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=detail_row, column=col_idx, value=value)
+                cell.alignment = Alignment(horizontal="left" if col_idx <= 2 else "right")
+                _apply_border(cell)
+                if col_idx == 5:
+                    cell.fill = _DISCREP_FILL
+            # Группировка: дневные строки можно свернуть под заголовком сверху
             ws.row_dimensions[detail_row].outline_level = 1
             detail_row += 1
-
-        # --- Строка-итог по показателю (итоги за период + нетто-разница) ---
-        bu_total = recon.bu.total if recon.bu else 0.0
-        pu_total = recon.pu.total if recon.pu else 0.0
-        net_diff = recon.diff_total if recon.diff_total is not None else round(bu_total - pu_total, 2)
-        _row(detail_row, [
-            f"Итого: {recon.indicator}",
-            "за период",
-            format_amount(bu_total),
-            format_amount(pu_total),
-            format_amount(net_diff),
-        ])
-        for col_idx in range(1, 6):
-            c = ws.cell(row=detail_row, column=col_idx)
-            c.font = bold
-            c.fill = _SUBTOTAL_FILL
-        detail_row += 1
 
         # Пустая строка-разделитель между показателями
         detail_row += 1
 
-    # Возможность сворачивать группы; кнопки «−/+» рядом со строкой-итогом
-    ws.sheet_properties.outlinePr.summaryBelow = True
+    # Заголовок группы — сверху над строками (кнопка сворачивания у заголовка)
+    ws.sheet_properties.outlinePr.summaryBelow = False
 
     ws.column_dimensions["A"].width = 42
     ws.column_dimensions["B"].width = 16

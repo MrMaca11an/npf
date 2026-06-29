@@ -156,37 +156,39 @@ class TestPipelineE2E:
         wb = openpyxl.load_workbook(output_file)
         assert "Детализация" in wb.sheetnames
 
-    def test_details_has_discrepancy_row(self, temp_data_dir: Path, output_file: Path):
-        """«Детализация» содержит строку с расхождением по Страховому резерву."""
-        _run_pipeline(temp_data_dir, output_file)
-        wb = openpyxl.load_workbook(output_file)
-        ws = wb["Детализация"]
+    @staticmethod
+    def _details_map(ws) -> dict:
+        """
+        Восстанавливает группированную «Детализацию» в {показатель: {дата: разница}}.
 
-        found = False
+        Учитывает новую структуру: строка-заголовок с названием показателя сверху,
+        под ней — дневные строки без названия (колонка A пуста).
+        """
+        result: dict[str, dict[str, str]] = {}
+        current = None
         for row in ws.iter_rows(min_row=2, values_only=True):
-            indicator, date_str, bu_sum, pu_sum, diff = row
-            if indicator == "Страховой резерв" and date_str == "17.02.2026":
-                found = True
-                assert diff is not None and diff != "", \
-                    "Разница в строке Детализации должна быть непустой"
-                break
+            name, date_str, bu_sum, pu_sum, diff = row
+            if name and not any((date_str, bu_sum, pu_sum, diff)):
+                current = name            # строка-заголовок группы
+                result.setdefault(current, {})
+            elif current and date_str:
+                result[current][date_str] = diff
+        return result
 
-        assert found, "В Детализации не найдена строка Страховой резерв / 17.02.2026"
+    def test_details_has_discrepancy_row(self, temp_data_dir: Path, output_file: Path):
+        """«Детализация» содержит расхождение по Страховому резерву на 17.02.2026."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Детализация"]
+        details = self._details_map(ws)
+        assert "17.02.2026" in details.get("Страховой резерв", {})
+        assert "15 000,00" in str(details["Страховой резерв"]["17.02.2026"])
 
     def test_pv_fl_discrepancy_in_details(self, temp_data_dir: Path, output_file: Path):
-        """«Детализация» содержит строку с расхождением по Пенсионным взносам ФЛ."""
+        """«Детализация» содержит расхождение по Пенсионным взносам ФЛ на 28.02.2026."""
         _run_pipeline(temp_data_dir, output_file)
-        wb = openpyxl.load_workbook(output_file)
-        ws = wb["Детализация"]
-
-        found = False
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            indicator, date_str, bu_sum, pu_sum, diff = row
-            if indicator == "Пенсионные взносы ФЛ" and date_str == "28.02.2026":
-                found = True
-                break
-
-        assert found, "В Детализации не найдена строка Пенсионные взносы ФЛ / 28.02.2026"
+        ws = openpyxl.load_workbook(output_file)["Детализация"]
+        details = self._details_map(ws)
+        assert "28.02.2026" in details.get("Пенсионные взносы ФЛ", {})
 
     @staticmethod
     def _svod_row(ws, indicator: str):
@@ -215,29 +217,32 @@ class TestPipelineE2E:
         """Дневные расхождения Целевых взносов ЮЛ присутствуют в «Детализации»."""
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Детализация"]
-        rows = [r for r in ws.iter_rows(min_row=2, values_only=True)
-                if r[0] == "Целевые взносы ЮЛ"]
-        dates = {r[1] for r in rows}
+        dates = self._details_map(ws).get("Целевые взносы ЮЛ", {})
         assert "10.02.2026" in dates
         assert "24.02.2026" in dates
 
-    def test_details_has_indicator_subtotals(self, temp_data_dir: Path, output_file: Path):
-        """В «Детализации» есть строки-итоги по показателю с итогами за период."""
+    def test_details_group_header_on_top_no_subtotals(self, temp_data_dir: Path, output_file: Path):
+        """Детализация: название показателя — заголовком сверху группы, без строк-итогов."""
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Детализация"]
         all_rows = list(ws.iter_rows(min_row=2, values_only=True))
-        # Итог по «Страховой резерв»: БУ 406 500,00 / ПУ 391 500,00 / разница 15 000,00
-        subtotal = next(
-            (r for r in all_rows if r[0] == "Итого: Страховой резерв"), None
+
+        # Нет строк-итогов по группам
+        assert not any(str(r[0] or "").startswith("Итого") for r in all_rows)
+
+        # Заголовок группы «Страховой резерв» — только название, без сумм (B..E пусты)
+        hdr_idx = next(
+            (i for i, r in enumerate(all_rows) if r[0] == "Страховой резерв"
+             and not any(r[1:])),
+            None,
         )
-        assert subtotal is not None, "Нет строки-итога по Страховому резерву"
-        assert subtotal[1] == "за период"
-        assert "406 500,00" in str(subtotal[2])   # Σ БУ
-        assert "391 500,00" in str(subtotal[3])   # Σ ПУ
-        assert "15 000,00" in str(subtotal[4])    # нетто-разница
-        # Итог по Целевым взносам ЮЛ: нетто-разница 0,00 (дневные взаимно гасятся)
-        cel = next((r for r in all_rows if r[0] == "Итого: Целевые взносы ЮЛ"), None)
-        assert cel is not None and str(cel[4]) == "0,00"
+        assert hdr_idx is not None, "Нет строки-заголовка группы «Страховой резерв»"
+
+        # Следующая строка — дневная: без названия (A пусто), с датой и суммами
+        nxt = all_rows[hdr_idx + 1]
+        assert not nxt[0]                 # название показателя не повторяется
+        assert nxt[1] == "17.02.2026"     # дата расхождения
+        assert "15 000,00" in str(nxt[4])  # разница за день
 
     def test_pv_fl_period_totals(self, temp_data_dir: Path, output_file: Path):
         """Итоги за период по Пенсионным взносам ФЛ: БУ > ПУ ровно на 5 000."""
@@ -256,7 +261,8 @@ class TestPipelineE2E:
         assert row[1] and row[2]            # обе стороны заполнены
         assert "86 800,00" in str(row[1])   # B — БУ
         assert "86 800,00" in str(row[2])   # C — ПУ
-        assert not row[3]                   # итоги равны → расхождения нет
+        assert row[3] == "0,00"             # разница БУ−ПУ подсчитана: 0,00
+        assert not row[4]                   # дат расхождений нет
 
     def test_negative_correction_no_discrepancy(self, temp_data_dir: Path, output_file: Path):
         """Целевые взносы ФЛ с отрицательной корректировкой: итоги равны, расхождения нет."""
@@ -264,7 +270,8 @@ class TestPipelineE2E:
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Целевые взносы ФЛ")
         assert row[1] == row[2]            # B=БУ == C=ПУ
-        assert not row[3] and not row[4]   # ни суммы, ни дат расхождений
+        assert row[3] == "0,00"            # разница подсчитана: 0,00
+        assert not row[4]                  # дат расхождений нет
 
     def test_llm_artifacts_created(self, temp_data_dir: Path, output_file: Path):
         """Pipeline создаёт обезличенное саммари (JSON) и промт рядом с отчётом."""
