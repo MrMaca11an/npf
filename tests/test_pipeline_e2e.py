@@ -206,8 +206,9 @@ class TestPipelineE2E:
         discrep_sum, discrep_dates = row[3], row[4]  # D=Расх.Сумма, E=Расх.Дата
         # Итоги БУ и ПУ совпадают
         assert bu_sum == pu_sum
-        # Сумма расхождения пуста (итоги равны), но даты дневных отличий присутствуют
-        assert not discrep_sum
+        # Итоги равны → нетто-разница 0,00 показывается в колонке «Сумма»
+        # (а не пусто), и перечислены конкретные даты дневных отличий.
+        assert discrep_sum == "0,00"
         assert discrep_dates and "10.02.2026" in str(discrep_dates) and "24.02.2026" in str(discrep_dates)
 
     def test_cel_ul_in_details(self, temp_data_dir: Path, output_file: Path):
@@ -219,6 +220,24 @@ class TestPipelineE2E:
         dates = {r[1] for r in rows}
         assert "10.02.2026" in dates
         assert "24.02.2026" in dates
+
+    def test_details_has_indicator_subtotals(self, temp_data_dir: Path, output_file: Path):
+        """В «Детализации» есть строки-итоги по показателю с итогами за период."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Детализация"]
+        all_rows = list(ws.iter_rows(min_row=2, values_only=True))
+        # Итог по «Страховой резерв»: БУ 406 500,00 / ПУ 391 500,00 / разница 15 000,00
+        subtotal = next(
+            (r for r in all_rows if r[0] == "Итого: Страховой резерв"), None
+        )
+        assert subtotal is not None, "Нет строки-итога по Страховому резерву"
+        assert subtotal[1] == "за период"
+        assert "406 500,00" in str(subtotal[2])   # Σ БУ
+        assert "391 500,00" in str(subtotal[3])   # Σ ПУ
+        assert "15 000,00" in str(subtotal[4])    # нетто-разница
+        # Итог по Целевым взносам ЮЛ: нетто-разница 0,00 (дневные взаимно гасятся)
+        cel = next((r for r in all_rows if r[0] == "Итого: Целевые взносы ЮЛ"), None)
+        assert cel is not None and str(cel[4]) == "0,00"
 
     def test_pv_fl_period_totals(self, temp_data_dir: Path, output_file: Path):
         """Итоги за период по Пенсионным взносам ФЛ: БУ > ПУ ровно на 5 000."""
