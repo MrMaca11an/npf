@@ -100,6 +100,33 @@ class TestReconcile:
         rows = reconcile({})
         assert len(rows) == 14
 
+    def test_total_equals_sum_of_daily(self):
+        """ИНВАРИАНТ: итог показателя == сумме распарсенных дневных значений."""
+        records = [
+            _rec("Пенсионные взносы ФЛ", D1, 100_000.0, "БУ"),
+            _rec("Пенсионные взносы ФЛ", D2, 42_000.0, "БУ"),
+            _rec("Пенсионные взносы ФЛ", D3, 8_000.0, "БУ"),
+        ]
+        row = self._run(records)["Пенсионные взносы ФЛ"]
+        assert row.bu.total == pytest.approx(150_000.0)
+        assert round(sum(row.bu.daily.values()), 2) == pytest.approx(row.bu.total)
+
+    def test_diff_total_equals_sum_of_daily_diffs(self):
+        """ИНВАРИАНТ: сумма расхождения == сумме дневных разниц (Свод == Детализация)."""
+        records = [
+            # БУ и ПУ: одинаковый месячный итог, но разное распределение по дням
+            _rec("Целевые взносы ЮЛ", D1, 30_000.0, "БУ"),
+            _rec("Целевые взносы ЮЛ", D3, 15_000.0, "БУ"),
+            _rec("Целевые взносы ЮЛ", D1, 23_000.0, "ПУ"),
+            _rec("Целевые взносы ЮЛ", D3, 22_000.0, "ПУ"),
+        ]
+        row = self._run(records)["Целевые взносы ЮЛ"]
+        # Итоги совпадают → нетто-разница 0, но по дням есть отклонения
+        assert row.diff_total == pytest.approx(0.0)
+        assert round(sum(row.diff_by_date.values()), 2) == pytest.approx(row.diff_total)
+        assert row.diff_total == pytest.approx(row.bu.total - row.pu.total)
+        assert set(row.diff_dates) == {D1, D3}
+
     def test_empty_row(self):
         """Показатели без данных имеют bu=None, pu=None, diff_total=None."""
         rows = reconcile({})

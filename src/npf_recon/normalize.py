@@ -228,3 +228,26 @@ def format_amount(x: float | None) -> str:
     formatted = raw.replace("\x00", " ")  # "1 234 567,89"  (обычный пробел U+0020)
 
     return f"({formatted})" if negative else formatted
+
+
+def format_diff(x: float | None) -> str:
+    """
+    Форматирует сумму расхождения со знаком «минус» (без скобок).
+
+    Используется для колонок расхождений/разницы, где знак важнее
+    «бухгалтерских» скобок.
+
+    Примеры:
+      7000.0    -> «7 000,00»
+      -7000.0   -> «−7 000,00»  (знак U+2212)
+      0         -> «0,00»
+      None      -> «»
+
+    :param x: числовое значение или None.
+    :return: отформатированная строка со знаком «−» для отрицательных.
+    """
+    if x is None:
+        return ""
+    if x < 0:
+        return f"−{format_amount(abs(x))}"
+    return format_amount(x)

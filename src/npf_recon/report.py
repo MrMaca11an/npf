@@ -27,7 +27,7 @@ from openpyxl.styles import (
     Side,
 )
 from npf_recon.models import ReconRow
-from npf_recon.normalize import format_amount, format_date
+from npf_recon.normalize import format_amount, format_date, format_diff
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ def _write_svod(
         # это и есть общая разница между источниками. Заполняется всегда, когда
         # присутствуют обе стороны (diff_total вычислен).
         if recon.diff_total is not None:
-            diff_sum_str = format_amount(recon.diff_total)
+            diff_sum_str = format_diff(recon.diff_total)
         else:
             diff_sum_str = ""
 
@@ -228,7 +228,7 @@ def _write_details(
                 format_date(d),
                 format_amount(bu_val),
                 format_amount(pu_val),
-                format_amount(diff_val),
+                format_diff(diff_val),    # разница — со знаком «минус», не в скобках
             ]
             for col_idx, value in enumerate(values, start=1):
                 cell = ws.cell(row=detail_row, column=col_idx, value=value)
@@ -239,6 +239,26 @@ def _write_details(
             # Группировка: дневные строки можно свернуть под заголовком сверху
             ws.row_dimensions[detail_row].outline_level = 1
             detail_row += 1
+
+        # --- Строка-итог расхождения по показателю (СНИЗУ группы) ---
+        # Сумма расхождения = БУ_итог − ПУ_итог (= сумма дневных разниц выше).
+        net_diff = recon.diff_total
+        if net_diff is None:
+            bu_total = recon.bu.total if recon.bu else 0.0
+            pu_total = recon.pu.total if recon.pu else 0.0
+            net_diff = round(bu_total - pu_total, 2)
+        subtotal_values = [
+            "Итого расхождение по показателю",
+            "", "", "",
+            format_diff(net_diff),
+        ]
+        for col_idx, value in enumerate(subtotal_values, start=1):
+            cell = ws.cell(row=detail_row, column=col_idx, value=value)
+            cell.font = bold
+            cell.fill = _SUBTOTAL_FILL
+            cell.alignment = Alignment(horizontal="left" if col_idx <= 2 else "right")
+            _apply_border(cell)
+        detail_row += 1
 
         # Пустая строка-разделитель между показателями
         detail_row += 1

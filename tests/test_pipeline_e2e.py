@@ -221,14 +221,11 @@ class TestPipelineE2E:
         assert "10.02.2026" in dates
         assert "24.02.2026" in dates
 
-    def test_details_group_header_on_top_no_subtotals(self, temp_data_dir: Path, output_file: Path):
-        """Детализация: название показателя — заголовком сверху группы, без строк-итогов."""
+    def test_details_group_header_top_and_subtotal_bottom(self, temp_data_dir: Path, output_file: Path):
+        """Детализация: название группы сверху, итог расхождения по показателю — снизу."""
         _run_pipeline(temp_data_dir, output_file)
         ws = openpyxl.load_workbook(output_file)["Детализация"]
         all_rows = list(ws.iter_rows(min_row=2, values_only=True))
-
-        # Нет строк-итогов по группам
-        assert not any(str(r[0] or "").startswith("Итого") for r in all_rows)
 
         # Заголовок группы «Страховой резерв» — только название, без сумм (B..E пусты)
         hdr_idx = next(
@@ -243,6 +240,20 @@ class TestPipelineE2E:
         assert not nxt[0]                 # название показателя не повторяется
         assert nxt[1] == "17.02.2026"     # дата расхождения
         assert "15 000,00" in str(nxt[4])  # разница за день
+
+        # Через строку — итог расхождения по показателю (снизу группы)
+        subtotal = all_rows[hdr_idx + 2]
+        assert subtotal[0] == "Итого расхождение по показателю"
+        assert "15 000,00" in str(subtotal[4])
+
+    def test_details_minus_not_parentheses(self, temp_data_dir: Path, output_file: Path):
+        """Отрицательная разница в «Детализации» — со знаком «−», а не в скобках."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Детализация"]
+        # Целевые взносы ЮЛ, 24.02.2026 — разница −7 000,00
+        diffs = self._details_map(ws).get("Целевые взносы ЮЛ", {})
+        assert diffs.get("24.02.2026") == "−7 000,00"
+        assert "(" not in str(diffs.get("24.02.2026"))
 
     def test_pv_fl_period_totals(self, temp_data_dir: Path, output_file: Path):
         """Итоги за период по Пенсионным взносам ФЛ: БУ > ПУ ровно на 5 000."""
