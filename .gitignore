@@ -1,0 +1,34 @@
+# Данные и результаты
+data/*
+!data/ПУ/
+data/ПУ/*
+!data/ПУ/.gitkeep
+!data/БУ/
+data/БУ/*
+!data/БУ/.gitkeep
+output/
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

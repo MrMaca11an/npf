@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "npf-recon"
+version = "0.1.0"
+description = "Система сверки БУ-ПУ для НПФ"
+requires-python = ">=3.11"
+dependencies = ["pandas", "openpyxl", "pyyaml"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
