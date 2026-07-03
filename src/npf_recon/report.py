@@ -139,19 +139,14 @@ def _write_svod(
         has_total_discrep = (
             recon.diff_total is not None and abs(recon.diff_total) > eps
         )
-        # Расхождение хотя бы по одному дню — даже если месячные итоги совпали
-        # (взаимно компенсирующиеся отклонения по дням).
-        has_any_discrep = has_total_discrep or bool(recon.diff_dates)
 
         # «Сумма расхождения» = разница между колонками БУ и ПУ по строке
         # (БУ_итог − ПУ_итог за период). Итоги БУ и ПУ собираются суммированием
         # распарсенных данных по дням (см. IndicatorSide.from_records), поэтому
-        # это и есть общая разница между источниками. Заполняется всегда, когда
-        # присутствуют обе стороны (diff_total вычислен).
-        if recon.diff_total is not None:
-            diff_sum_str = format_diff(recon.diff_total)
-        else:
-            diff_sum_str = ""
+        # это и есть общая разница между источниками. Если итоги совпали
+        # (разница 0 в пределах eps) — ячейка остаётся ПУСТОЙ и не подсвечивается:
+        # ноль — это отсутствие расхождения по сумме, а не расхождение.
+        diff_sum_str = format_diff(recon.diff_total) if has_total_discrep else ""
 
         row_data = [
             # (значение, колонка 1-based, выравнивание)
@@ -168,7 +163,11 @@ def _write_svod(
                 horizontal=align, vertical="top", wrap_text=True
             )
             _apply_border(cell)
-            if has_any_discrep and col_idx in (4, 5):
+            # Подсветка каждой колонки — по своему условию: «Сумма» только при
+            # реальном расхождении по итогу, «Дата» — при наличии дневных расхождений.
+            if col_idx == 4 and has_total_discrep:
+                cell.fill = _DISCREP_FILL
+            elif col_idx == 5 and recon.diff_dates:
                 cell.fill = _DISCREP_FILL
 
     # --- Ширины колонок ---

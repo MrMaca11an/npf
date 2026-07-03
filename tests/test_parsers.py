@@ -682,6 +682,199 @@ class TestJsonNpoParser:
 
 
 # ------------------------------------------------------------------
+# Тесты json_npo: НОВАЯ вложенная схема (report.items[].{section, items[]})
+# ------------------------------------------------------------------
+
+class TestJsonNpoNestedSchema:
+    """
+    Реальная выгрузка (пример пользователя, файл «НПО_ОПС_...json»): вместо
+    плоских «components» — вложенные разделы («section») с показателями
+    («indicator»), у каждого — либо дневная разбивка («items»: [{date, amount}]),
+    либо разовый остаток на дату («date» + «amount» без вложенных items).
+    """
+
+    def _write_json(self, path: Path, data: dict) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _nested_data(self, section_items: list[dict], extra_sections: list[dict] | None = None) -> dict:
+        sections = [{"section": "НПО", "items": section_items}]
+        if extra_sections:
+            sections.extend(extra_sections)
+        return {
+            "report": {
+                "startDate": "2026-02-01T00:00:00",
+                "endDate": "2026-02-28T00:00:00",
+                "items": sections,
+            }
+        }
+
+    def test_daily_breakdown_indicator(self, tmp_path: Path):
+        """Показатель с вложенной дневной разбивкой суммируется по дням."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_ОПС_вложенный.json"
+        self._write_json(json_path, self._nested_data([
+            {
+                "indicator": "Целевые взносы ФЛ",
+                "amount": 961697.12,
+                "items": [
+                    {"date": "2026-02-01T00:00:00", "amount": 15},
+                    {"date": "2026-02-02T00:00:00", "amount": 77833.19},
+                    {"date": "2026-02-03T00:00:00", "amount": 21693.09},
+                ],
+            },
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert len(records) == 3
+        assert all(r.indicator == "Целевые взносы ФЛ" for r in records)
+        by_date = {r.date: r.amount for r in records}
+        assert by_date[datetime.date(2026, 2, 1)] == pytest.approx(15.0)
+        assert by_date[datetime.date(2026, 2, 2)] == pytest.approx(77833.19)
+        assert by_date[datetime.date(2026, 2, 3)] == pytest.approx(21693.09)
+        assert round(sum(by_date.values()), 2) == pytest.approx(99541.28)
+
+    def test_all_known_indicators_from_real_export(self, tmp_path: Path):
+        """
+        Полный набор показателей НПО из реальной выгрузки (взносы, выплаты,
+        возвраты) — каждый должен попасть в правильную строку отчёта.
+        """
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        d = "2026-02-11T00:00:00"
+        json_path = tmp_path / "НПО_ОПС_Февраль2026_2.json"
+        self._write_json(json_path, self._nested_data([
+            {"indicator": "Целевые взносы ФЛ", "amount": 961697.12,
+             "items": [{"date": d, "amount": 961697.12}]},
+            {"indicator": "Пенсионные взносы ФЛ по договорам НПО", "amount": 542332755.53,
+             "items": [{"date": d, "amount": 542332755.53}]},
+            {"indicator": "Возврат в Фонд выплаченной пенсии (по распоряжению)", "amount": 5824,
+             "items": [{"date": d, "amount": 5824}]},
+            {"indicator": "Целевые взносы ЮЛ", "amount": 1013861.72,
+             "items": [{"date": d, "amount": 1013861.72}]},
+            {"indicator": "Пенсионные взносы ЮЛ по договорам НПО", "amount": 45494583.02,
+             "items": [{"date": d, "amount": 45494583.02}]},
+            {"indicator": "Выплаты выкупных сумм НПО", "amount": 578231387.69,
+             "items": [{"date": d, "amount": 578231387.69}]},
+            {"indicator": "Выплаты негосударственных пенсий НПО", "amount": 219579913.71,
+             "items": [{"date": d, "amount": 219579913.71}]},
+            {"indicator": "Возврат клиенту ошибочных взносов (в составе эл.реестра)", "amount": 735367.59,
+             "items": [{"date": d, "amount": 735367.59}]},
+            {"indicator": "Выплаты наследуемых сумм НПО", "amount": 10189369.55,
+             "items": [{"date": d, "amount": 10189369.55}]},
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        by_ind: dict[str, float] = {}
+        for r in records:
+            by_ind[r.indicator] = round(by_ind.get(r.indicator, 0.0) + r.amount, 2)
+
+        assert by_ind["Целевые взносы ФЛ"] == pytest.approx(961697.12)
+        assert by_ind["Целевые взносы ЮЛ"] == pytest.approx(1013861.72)
+        assert by_ind["Пенсионные взносы ЮЛ"] == pytest.approx(45494583.02)
+        assert by_ind["Выплата выкупных сумм"] == pytest.approx(578231387.69)
+        assert by_ind["Выплата наследуемых сумм"] == pytest.approx(10189369.55)
+        # Пенсионные взносы ФЛ и Выплата пенсии получают взнос/выплату МИНУС
+        # соответствующий возврат (возврат вычитается из своей категории).
+        assert by_ind["Пенсионные взносы ФЛ"] == pytest.approx(542332755.53 - 735367.59)
+        assert by_ind["Выплата пенсии"] == pytest.approx(219579913.71 - 5824.0)
+
+    def test_single_balance_point_no_breakdown(self, tmp_path: Path):
+        """
+        Разовый остаток («Остатки на начало/конец») — без вложенной разбивки,
+        только «date» + «amount» — парсится, ЕСЛИ имя точно совпадает со строкой
+        отчёта. «Остатки на начало» пока НЕ совпадает ни с одной из 14 строк
+        (в отчёте — раздельные «РППО инвестиционный/страховой»), поэтому
+        закономерно пропускается, пока источник не приведёт названия к строкам
+        отчёта (см. FileRule.params: exact-match приоритет в json_npo.py).
+        """
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_остатки.json"
+        self._write_json(json_path, self._nested_data([
+            {"indicator": "Остатки на начало", "date": "2026-02-01T00:00:00", "amount": 126379073074.24},
+            {"indicator": "Остатки на конец", "date": "2026-02-28T23:59:59", "amount": 126123575401.53},
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert records == []
+
+    def test_single_balance_point_matches_exact_report_row(self, tmp_path: Path):
+        """
+        Если источник приведёт имя точно к названию строки отчёта (будущий
+        исправленный экспорт) — разовый остаток корректно попадает в нужную
+        строку со своей датой (это и есть механизм точного сопоставления).
+        """
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_остатки_точные.json"
+        self._write_json(json_path, self._nested_data([
+            {"indicator": "РППО страховой, остаток на начало периода",
+             "date": "2026-02-01T00:00:00", "amount": 100_000.0},
+        ]))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert len(records) == 1
+        assert records[0].indicator == "РППО страховой, остаток на начало периода"
+        assert records[0].amount == pytest.approx(100_000.0)
+        assert records[0].date == datetime.date(2026, 2, 1)
+
+    def test_unrelated_section_ignored(self, tmp_path: Path):
+        """
+        Раздел «СПН» (обязательное пенсионное страхование) не относится к
+        нашим 14 строкам отчёта — его показатели закономерно пропускаются,
+        включая опасный краевой случай короткого имени «ИД» внутри длинной
+        фразы («Начисление ИД на СПН» НЕ должно ложно совпасть со строкой «ИД»).
+        """
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_ОПС_спн.json"
+        self._write_json(json_path, self._nested_data(
+            section_items=[
+                {"indicator": "Целевые взносы ФЛ", "amount": 100.0,
+                 "items": [{"date": "2026-02-01T00:00:00", "amount": 100.0}]},
+            ],
+            extra_sections=[
+                {"section": "СПН", "items": [
+                    {"indicator": "СПН, Остаток на начало периода",
+                     "date": "2026-02-01T00:00:00", "amount": 731586160097.17},
+                    {"indicator": "Начисление ИД на СПН",
+                     "date": "2026-02-28T23:59:59", "amount": 0},
+                    {"indicator": "Прочие поступления СПН", "amount": 94352.63,
+                     "items": [{"date": "2026-02-04T00:00:00", "amount": 333.41}]},
+                ]},
+            ],
+        ))
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        # Только показатель из раздела «НПО» — раздел «СПН» полностью проигнорирован
+        assert len(records) == 1
+        assert records[0].indicator == "Целевые взносы ФЛ"
+        # Ложного совпадения с «ИД» не произошло
+        assert not any(r.indicator == "ИД" for r in records)
+
+    def test_flat_schema_still_supported(self, tmp_path: Path):
+        """Старая («плоская») схема продолжает работать без изменений (обратная совместимость)."""
+        from npf_recon.parsers.json_npo import JsonNpoParser
+
+        json_path = tmp_path / "НПО_плоский.json"
+        self._write_json(json_path, {
+            "report": {
+                "startDate": "2026-02-01T00:00:00",
+                "endDate": "2026-02-28T00:00:00",
+                "items": [
+                    {
+                        "date": "2026-02-01T00:00:00",
+                        "amount": "100000.00",
+                        "components": [
+                            {"account": "76.01", "name": "Пенсионные взносы ФЛ по договорам НПО", "amount": "100000.00"},
+                        ],
+                    },
+                ],
+            }
+        })
+        records = JsonNpoParser().parse(_make_raw(json_path, side="БУ"), _make_npo_rule())
+        assert len(records) == 1
+        assert records[0].indicator == "Пенсионные взносы ФЛ"
+
+
+# ------------------------------------------------------------------
 # Тесты excel_osv (оборотно-сальдовая ведомость, БУ Страховой резерв)
 # ------------------------------------------------------------------
 

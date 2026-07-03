@@ -206,12 +206,25 @@ class TestPipelineE2E:
         assert row is not None
         bu_sum, pu_sum = row[1], row[2]       # B=БУ, C=ПУ
         discrep_sum, discrep_dates = row[3], row[4]  # D=Расх.Сумма, E=Расх.Дата
-        # Итоги БУ и ПУ совпадают
+        # Итоги БУ и ПУ совпадают → «Сумма расхождения» пустая (0 — не расхождение),
+        # но конкретные даты дневных отличий перечислены.
         assert bu_sum == pu_sum
-        # Итоги равны → нетто-разница 0,00 показывается в колонке «Сумма»
-        # (а не пусто), и перечислены конкретные даты дневных отличий.
-        assert discrep_sum == "0,00"
+        assert not discrep_sum
         assert discrep_dates and "10.02.2026" in str(discrep_dates) and "24.02.2026" in str(discrep_dates)
+
+    def test_svod_zero_diff_cell_not_highlighted(self, temp_data_dir: Path, output_file: Path):
+        """«Сумма» пустая при нулевой разнице не подсвечивается красным."""
+        _run_pipeline(temp_data_dir, output_file)
+        ws = openpyxl.load_workbook(output_file)["Свод"]
+        for row in ws.iter_rows(min_row=4, max_row=17):
+            if row[0].value == "Целевые взносы ЮЛ":
+                sum_cell = row[3]   # колонка D — «Сумма»
+                assert not sum_cell.value
+                assert sum_cell.fill.fgColor.rgb in ("00000000", None)
+                date_cell = row[4]  # колонка E — «Дата» — расхождение есть, подсвечено
+                assert date_cell.fill.fgColor.rgb == "00FFE0E0"
+                return
+        pytest.fail("Строка 'Целевые взносы ЮЛ' не найдена")
 
     def test_cel_ul_in_details(self, temp_data_dir: Path, output_file: Path):
         """Дневные расхождения Целевых взносов ЮЛ присутствуют в «Детализации»."""
@@ -272,7 +285,7 @@ class TestPipelineE2E:
         assert row[1] and row[2]            # обе стороны заполнены
         assert "86 800,00" in str(row[1])   # B — БУ
         assert "86 800,00" in str(row[2])   # C — ПУ
-        assert row[3] == "0,00"             # разница БУ−ПУ подсчитана: 0,00
+        assert not row[3]                   # итоги равны → «Сумма» пустая (не 0,00)
         assert not row[4]                   # дат расхождений нет
 
     def test_negative_correction_no_discrepancy(self, temp_data_dir: Path, output_file: Path):
@@ -281,7 +294,7 @@ class TestPipelineE2E:
         ws = openpyxl.load_workbook(output_file)["Свод"]
         row = self._svod_row(ws, "Целевые взносы ФЛ")
         assert row[1] == row[2]            # B=БУ == C=ПУ
-        assert row[3] == "0,00"            # разница подсчитана: 0,00
+        assert not row[3]                  # итоги равны → «Сумма» пустая (не 0,00)
         assert not row[4]                  # дат расхождений нет
 
     def test_llm_artifacts_created(self, temp_data_dir: Path, output_file: Path):
